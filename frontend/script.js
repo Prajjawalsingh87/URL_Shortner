@@ -8,9 +8,12 @@
  */
 
 // ──────────────────────────────────────────────
-// Configuration — change BASE_URL to your deployed backend
+// Configuration — use local backend in development and Render in production
 // ──────────────────────────────────────────────
-const BASE_URL = "http://localhost:8000";
+const PROD_BASE_URL = "https://url-shortner-xzz7.onrender.com";
+const BASE_URL = ["localhost", "127.0.0.1"].includes(window.location.hostname)
+    ? "http://localhost:8000"
+    : PROD_BASE_URL;
 
 // ──────────────────────────────────────────────
 // DOM References (cached for performance)
@@ -23,6 +26,11 @@ const shortUrlDisplay = document.getElementById("short-url-display");
 const originalUrlDisplay = document.getElementById("original-url-display");
 const expiresDisplay = document.getElementById("expires-display");
 const checkResult = document.getElementById("check-result");
+const apiDocsLink = document.getElementById("api-docs-link");
+
+if (apiDocsLink) {
+    apiDocsLink.href = `${BASE_URL}/docs`;
+}
 
 // ──────────────────────────────────────────────
 // Utility Helpers
