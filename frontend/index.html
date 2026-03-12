@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapLink — URL Shortener</title>
+  <meta name="description" content="Transform long URLs into short, shareable links instantly. Free URL shortener with analytics." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="bg-orb orb-one"></div>
+  <div class="bg-orb orb-two"></div>
+  <div class="noise"></div>
+
+  <header class="header">
+    <a href="#shorten" class="brand">
+      <span class="brand-mark">S</span>
+      <span class="brand-name">SnapLink</span>
+    </a>
+
+    <nav class="nav">
+      <a href="#shorten" class="nav-link">Create</a>
+      <a href="#analytics-section" class="nav-link">Analytics</a>
+      <a href="http://localhost:8000/docs" target="_blank" class="nav-link nav-link-strong">API Docs</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero-shell" id="shorten">
+      <div class="hero-copy">
+        <div class="eyebrow-row">
+          <span class="hero-badge">No login. No drag. Just links.</span>
+          <span class="hero-chip">built for launch days</span>
+        </div>
+
+        <h1 class="hero-title">
+          Turn messy links
+          <span class="hero-title-accent">into clean flexes.</span>
+        </h1>
+
+        <p class="hero-sub">
+          Shorten URLs, drop custom codes, and peek at click energy without opening another tab jungle.
+        </p>
+
+        <div class="hero-stat-row">
+          <div class="hero-stat">
+            <span class="hero-stat-value">Fast</span>
+            <span class="hero-stat-label">instant redirects</span>
+          </div>
+          <div class="hero-stat">
+            <span class="hero-stat-value">Smart</span>
+            <span class="hero-stat-label">analytics on every click</span>
+          </div>
+          <div class="hero-stat">
+            <span class="hero-stat-value">Clean</span>
+            <span class="hero-stat-label">custom codes when needed</span>
+          </div>
+        </div>
+
+        <div class="culture-strip">
+          <span>share links that don’t look cursed</span>
+          <span>preview before you trust</span>
+          <span>track what actually lands</span>
+        </div>
+      </div>
+
+      <div class="hero-panel-wrap">
+        <div class="floating-note note-top">new drop</div>
+        <div class="floating-note note-bottom">analytics ready</div>
+
+        <div class="card input-card" id="main-card">
+          <div class="card-kicker">Create a short link</div>
+          <div class="card-title-row">
+            <h2 class="card-title">Paste. Trim. Ship.</h2>
+            <span class="card-pill">live</span>
+          </div>
+
+          <div class="input-group">
+            <span class="input-icon">link</span>
+            <input
+              type="url"
+              id="url-input"
+              class="url-input"
+              placeholder="https://your-very-long-url.com/some/path?with=query&params=here"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="shorten-btn" class="btn btn-primary" onclick="shortenUrl()">
+              <span class="btn-text">Shorten</span>
+              <span class="btn-loader hidden">
+                <span class="spinner"></span>
+              </span>
+            </button>
+          </div>
+
+          <div class="options-row">
+            <div class="option-group">
+              <label for="custom-code">Custom code</label>
+              <input type="text" id="custom-code" class="option-input" placeholder="drop-name" maxlength="20" />
+            </div>
+            <div class="option-group">
+              <label for="expiry-days">Expiry in days</label>
+              <input type="number" id="expiry-days" class="option-input" placeholder="Never" min="1" max="365" />
+            </div>
+          </div>
+
+          <div class="status-row">
+            <div id="status-msg" class="status-msg hidden"></div>
+          </div>
+
+          <div class="mini-grid">
+            <div class="mini-card">
+              <span class="mini-title">Custom slugs</span>
+              <span class="mini-text">Make campaign links memorable.</span>
+            </div>
+            <div class="mini-card">
+              <span class="mini-title">Expiry support</span>
+              <span class="mini-text">Run time-boxed drops without cleanup.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card result-card hidden" id="result-card">
+          <div class="result-header">
+            <span class="result-label">Link is ready to post</span>
+          </div>
+          <div class="result-url-row">
+            <a id="short-url-display" href="#" target="_blank" class="short-url-link"></a>
+            <div class="result-actions">
+              <button class="btn btn-ghost" id="copy-btn" onclick="copyLink()" title="Copy">
+                <span>Copy</span>
+              </button>
+              <button class="btn btn-ghost" id="open-btn" onclick="openLink()" title="Open">
+                <span>Open</span>
+              </button>
+              <button class="btn btn-ghost" id="check-btn" onclick="checkLink()" title="Verify">
+                <span>Check</span>
+              </button>
+            </div>
+          </div>
+          <div class="result-meta">
+            <span id="original-url-display" class="meta-item"></span>
+            <span id="expires-display" class="meta-item"></span>
+          </div>
+          <div id="check-result" class="check-result hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="feature-band" aria-label="product highlights">
+      <div class="feature-band-card">
+        <span class="feature-band-label">verify</span>
+        <p>Preview every short code before sending traffic.</p>
+      </div>
+      <div class="feature-band-card">
+        <span class="feature-band-label">track</span>
+        <p>Watch clicks, dates, IPs, and user agents in one place.</p>
+      </div>
+      <div class="feature-band-card">
+        <span class="feature-band-label">repeat</span>
+        <p>Reuse the same destination without generating noisy duplicates.</p>
+      </div>
+    </section>
+
+    <section class="analytics-section" id="analytics-section">
+      <div class="section-heading">
+        <span class="section-kicker">Signal check</span>
+        <h2 class="section-title">See whether your short link actually hit.</h2>
+        <p class="section-sub">Drop any code below to pull click history, device behavior, and recent traffic.</p>
+      </div>
+
+      <div class="card analytics-input-card">
+        <div class="analytics-search-row">
+          <div class="input-group">
+            <span class="input-icon">scan</span>
+            <input
+              type="text"
+              id="analytics-code"
+              class="url-input"
+              placeholder="Enter short code"
+              maxlength="20"
+            />
+            <button class="btn btn-primary" onclick="loadAnalytics()">
+              <span>Analyze</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card analytics-results hidden" id="analytics-results">
+        <div class="analytics-header">
+          <div class="analytics-identity">
+            <span class="analytics-label">Link profile</span>
+            <h3 id="a-short-code" class="a-code"></h3>
+            <a id="a-original-url" href="#" target="_blank" class="a-original-url"></a>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-chip">
+              <span class="stat-label">Total clicks</span>
+              <span class="stat-value" id="a-total-clicks">0</span>
+            </div>
+            <div class="stat-chip">
+              <span class="stat-label">Created</span>
+              <span class="stat-value stat-value-small" id="a-created"></span>
+            </div>
+            <div class="stat-chip">
+              <span class="stat-label">Expires</span>
+              <span class="stat-value stat-value-small" id="a-expires">Never</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="analytics-grid">
+          <div class="analytics-block">
+            <h4 class="chart-title">Clicks by day</h4>
+            <div id="chart-container" class="chart-container"></div>
+          </div>
+
+          <div class="analytics-block">
+            <h4 class="chart-title">Top user agents</h4>
+            <div id="ua-table" class="ua-table"></div>
+          </div>
+        </div>
+
+        <div class="analytics-block table-block">
+          <h4 class="chart-title">Recent clicks</h4>
+          <div class="table-wrapper">
+            <table id="clicks-table" class="clicks-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>IP Address</th>
+                  <th>User Agent</th>
+                </tr>
+              </thead>
+              <tbody id="clicks-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>SnapLink for fast drops, campaigns, and clean shares.</span>
+    <span>FastAPI + PostgreSQL + Redis</span>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

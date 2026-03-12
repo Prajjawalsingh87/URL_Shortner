@@ -1,0 +1,48 @@
+# Git ignore file for URL Shortener project
+
+# ── Environment variables (NEVER commit these) ──
+.env
+*.env
+!.env.example
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+dist/
+build/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.pyo
+
+# ── Pytest / Testing ──
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── MyPy ──
+.mypy_cache/
+
+# ── Docker ──
+.dockerignore
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Node (if using any JS tooling) ──
+node_modules/
