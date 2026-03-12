@@ -18,6 +18,12 @@
 
 SnapLink transforms long URLs into compact, shareable links using **Base62 encoding**. Every redirect is cached in Redis for sub-millisecond lookups, while PostgreSQL stores all analytics data including per-click IP addresses, timestamps, and user agents.
 
+## 🌐 Live Demo
+
+- Frontend: https://url-shortner-1-xyqj.onrender.com
+- Backend API: https://url-shortner-xzz7.onrender.com
+- API Docs: https://url-shortner-xzz7.onrender.com/docs
+
 ### Architecture
 
 ```
@@ -234,7 +240,7 @@ CREATE TABLE clicks (
 
 ---
 
-## ☁️ Free-Tier Deployment on Railway
+## ☁️ Deployment on Render
 
 ### Step 1: Push to GitHub
 ```bash
@@ -242,21 +248,25 @@ git init && git add . && git commit -m "Initial commit"
 git push origin main
 ```
 
-### Step 2: Deploy Backend on Railway
-1. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
+### Step 2: Deploy Backend on Render
+1. Go to [render.com](https://render.com) → New Web Service
 2. Select your repository
-3. Railway will auto-detect the Dockerfile in `backend/`
-4. Add a **PostgreSQL** plugin and a **Redis** plugin from Railway's dashboard
-5. Set environment variables in Railway:
-   - `DATABASE_URL` — auto-provided by Railway's PostgreSQL plugin
-   - `REDIS_URL` — auto-provided by Railway's Redis plugin
-   - `BASE_URL` — your Railway public domain (e.g. `https://app.up.railway.app`)
+3. Set `Language` to `Docker`
+4. Set `Root Directory` to `backend`
+5. Set backend environment variables in Render:
+   - `DATABASE_URL` — your PostgreSQL connection string
+   - `REDIS_URL` — your Redis connection string
+   - `CACHE_TTL_SECONDS` — e.g. `3600`
+   - `BASE_URL` — your Render backend domain (e.g. `https://url-shortner-xzz7.onrender.com`)
    - `ALLOWED_ORIGINS` — your frontend URL
 
-### Step 3: Deploy Frontend on Vercel / Netlify
-1. Move `frontend/` to a separate repo or configure your host to serve it
-2. Update `BASE_URL` in `script.js` to your Railway backend URL
-3. Deploy with `vercel --prod` or drag-drop to Netlify
+### Step 3: Deploy Frontend on Render
+1. Create a new **Static Site** in Render
+2. Select the same repository
+3. Set `Root Directory` to `frontend`
+4. Leave `Build Command` empty
+5. Set `Publish Directory` to `.`
+6. Redeploy the backend after adding the frontend Render domain to `ALLOWED_ORIGINS`
 
 ---
 
