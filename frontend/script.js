@@ -1,348 +1,691 @@
 /**
- * script.js — SnapLink URL Shortener Frontend Logic
+ * script.js — SnapLink frontend
  *
- * Handles:
- * - URL shortening (POST /shorten)
- * - Copy / Open / Verify short link
- * - Analytics loading and chart rendering (GET /analytics/{code})
+ * - Shorten URLs (POST /shorten) with optional custom alias + expiry
+ * - Copy / open the result, keep a "recent links" list in localStorage
+ * - Analytics for any short code (GET /analytics/{code})
+ * - Backend status pill (GET /health)
  */
 
-// ──────────────────────────────────────────────
-// Configuration — use local backend in development and Render in production
-// ──────────────────────────────────────────────
-const PROD_BASE_URL = "https://url-shortner-xzz7.onrender.com";
-const BASE_URL = ["localhost", "127.0.0.1"].includes(window.location.hostname)
-    ? "http://localhost:8000"
-    : PROD_BASE_URL;
+(() => {
+  "use strict";
 
-// ──────────────────────────────────────────────
-// DOM References (cached for performance)
-// ──────────────────────────────────────────────
-const urlInput = document.getElementById("url-input");
-const shortenBtn = document.getElementById("shorten-btn");
-const statusMsg = document.getElementById("status-msg");
-const resultCard = document.getElementById("result-card");
-const shortUrlDisplay = document.getElementById("short-url-display");
-const originalUrlDisplay = document.getElementById("original-url-display");
-const expiresDisplay = document.getElementById("expires-display");
-const checkResult = document.getElementById("check-result");
-const apiDocsLink = document.getElementById("api-docs-link");
+  // ──────────────────────────────────────────────
+  // API base URL
+  //   1. ?api=https://… in the page URL (handy for testing a deploy)
+  //   2. <meta name="snaplink-api" content="https://…"> in index.html
+  //   3. localhost / 127.0.0.1  -> same host, port 8000
+  //   4. otherwise the production API below
+  // ──────────────────────────────────────────────
+  const PROD_API_BASE = "https://url-shortner-xzz7.onrender.com";
 
-if (apiDocsLink) {
-    apiDocsLink.href = `${BASE_URL}/docs`;
-}
+  function resolveApiBase() {
+    const fromQuery = new URLSearchParams(location.search).get("api");
+    const fromMeta = document.querySelector('meta[name="snaplink-api"]')?.content;
+    const explicit = (fromQuery || fromMeta || "").trim();
+    if (explicit) return explicit.replace(/\/+$/, "");
 
-// ──────────────────────────────────────────────
-// Utility Helpers
-// ──────────────────────────────────────────────
+    const host = location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "") {
+      return `http://${host || "localhost"}:8000`;
+    }
+    return PROD_API_BASE;
+  }
 
-/** Show a status message below the input card */
-function showStatus(msg, type = "info") {
-    statusMsg.textContent = msg;
-    statusMsg.className = `status-msg ${type}`;
-    statusMsg.classList.remove("hidden");
-}
+  const API_BASE = resolveApiBase();
+  const REQUEST_TIMEOUT_MS = 70_000; // free-tier hosts can take ~1 min to wake
+  const SLOW_NOTICE_MS = 5_000;
+  const STORAGE_KEY = "snaplink:recent";
+  const MAX_RECENT = 20;
 
-/** Hide the status message */
-function clearStatus() {
-    statusMsg.classList.add("hidden");
-    statusMsg.textContent = "";
-}
+  // ──────────────────────────────────────────────
+  // DOM
+  // ──────────────────────────────────────────────
+  const $ = (id) => document.getElementById(id);
 
-/** Toggle the Shorten button spinner vs text */
-function setLoading(isLoading) {
-    const btnText = shortenBtn.querySelector(".btn-text");
-    const btnLoader = shortenBtn.querySelector(".btn-loader");
-    shortenBtn.disabled = isLoading;
-    btnText.classList.toggle("hidden", isLoading);
-    btnLoader.classList.toggle("hidden", !isLoading);
-}
+  const shortenForm = $("shorten-form");
+  const urlInput = $("url-input");
+  const urlError = $("url-error");
+  const aliasInput = $("custom-code");
+  const aliasError = $("alias-error");
+  const aliasPrefix = $("alias-prefix");
+  const advanced = $("advanced");
+  const expirySelect = $("expiry-days");
+  const shortenBtn = $("shorten-btn");
+  const formStatus = $("form-status");
 
-/** Format a UTC date string to a readable local format */
-function formatDate(isoStr) {
-    if (!isoStr) return "Never";
-    const d = new Date(isoStr);
-    return d.toLocaleDateString("en-IN", {
-        day: "2-digit", month: "short", year: "numeric",
-        hour: "2-digit", minute: "2-digit",
+  const resultCard = $("result-card");
+  const shortUrlEl = $("short-url-display");
+  const originalUrlEl = $("original-url-display");
+  const createdEl = $("created-display");
+  const expiresEl = $("expires-display");
+  const copyBtn = $("copy-btn");
+  const openBtn = $("open-btn");
+  const statsBtn = $("stats-btn");
+
+  const recentList = $("recent-list");
+  const recentTpl = $("recent-item-tpl");
+  const clearRecentBtn = $("clear-recent");
+
+  const analyticsForm = $("analytics-form");
+  const analyticsInput = $("analytics-code");
+  const analyticsError = $("analytics-error");
+  const analyticsBtn = $("analytics-btn");
+  const analyticsResults = $("analytics-results");
+
+  const apiStatus = $("api-status");
+  const toastEl = $("toast");
+
+  let currentResult = null;
+
+  $("api-docs-link").href = `${API_BASE}/docs`;
+  aliasPrefix.textContent = `${hostOf(API_BASE)}/`;
+
+  // ──────────────────────────────────────────────
+  // Helpers
+  // ──────────────────────────────────────────────
+  function hostOf(url) {
+    try { return new URL(url).host; } catch { return "snaplink"; }
+  }
+
+  /** Backend returns naive UTC timestamps (no "Z"); treat them as UTC. */
+  function parseDate(value) {
+    if (!value) return null;
+    const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value);
+    const d = new Date(hasZone ? value : `${value}Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function formatDate(value, withTime = true) {
+    const d = parseDate(value);
+    if (!d) return "Never";
+    return d.toLocaleString(undefined, {
+      day: "numeric", month: "short", year: "numeric",
+      ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
     });
-}
+  }
 
-// ──────────────────────────────────────────────
-// Main: Shorten URL
-// ──────────────────────────────────────────────
-async function shortenUrl() {
-    clearStatus();
-    checkResult.classList.add("hidden");
-
-    const longUrl = urlInput.value.trim();
-    const customCode = document.getElementById("custom-code").value.trim();
-    const expiryDays = parseInt(document.getElementById("expiry-days").value) || null;
-
-    // Basic client-side validation
-    if (!longUrl) {
-        showStatus("⚠️ Please enter a URL to shorten.", "error");
-        return;
+  function relativeTime(value) {
+    const d = parseDate(value);
+    if (!d) return "";
+    const diff = (d.getTime() - Date.now()) / 1000;
+    const abs = Math.abs(diff);
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    const units = [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]];
+    for (const [unit, secs] of units) {
+      if (abs >= secs) return rtf.format(Math.round(diff / secs), unit);
     }
-    if (!longUrl.startsWith("http://") && !longUrl.startsWith("https://")) {
-        showStatus("⚠️ URL must start with http:// or https://", "error");
-        return;
+    return "just now";
+  }
+
+  function isExpired(expiresAt) {
+    const d = parseDate(expiresAt);
+    return !!d && d.getTime() < Date.now();
+  }
+
+  function prettyUrl(url) {
+    return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  }
+
+  const ICONS = {
+    error: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>',
+    info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.01"/></svg>',
+  };
+
+  function setStatus(message, tone = "info") {
+    if (!message) {
+      formStatus.textContent = "";
+      formStatus.removeAttribute("data-tone");
+      return;
     }
+    formStatus.dataset.tone = tone;
+    formStatus.innerHTML = tone === "error" || tone === "warning" ? ICONS.error : ICONS.info;
+    const span = document.createElement("span");
+    span.textContent = message;
+    formStatus.appendChild(span);
+  }
 
-    setLoading(true);
-    showStatus("⏳ Validating and shortening your URL…", "info");
+  function setFieldError(input, errorEl, message) {
+    errorEl.textContent = message || "";
+    if (message) input.setAttribute("aria-invalid", "true");
+    else input.removeAttribute("aria-invalid");
+  }
 
-    const body = { url: longUrl };
-    if (customCode) body.custom_code = customCode;
-    if (expiryDays) body.expires_in_days = expiryDays;
+  function setLoading(btn, loading, label) {
+    btn.disabled = loading;
+    btn.classList.toggle("is-loading", loading);
+    btn.setAttribute("aria-busy", String(loading));
+    if (label) btn.querySelector(".btn-label").textContent = label;
+  }
 
+  let toastTimer;
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add("is-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("is-visible"), 2200);
+  }
+
+  async function copyText(text) {
     try {
-        const response = await fetch(`${BASE_URL}/shorten`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback for non-secure contexts / older browsers
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+      return ok;
+    }
+  }
 
-        const data = await response.json();
+  /** Turn a FastAPI error payload into a readable sentence. */
+  function errorMessage(data, status) {
+    const detail = data && data.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail) && detail.length) {
+      return detail
+        .map((d) => String(d.msg || "Invalid value").replace(/^Value error, /, ""))
+        .join(" ");
+    }
+    if (status >= 500) return "The server ran into a problem. Please try again in a moment.";
+    return `Request failed (HTTP ${status}).`;
+  }
 
-        if (!response.ok) {
-            // Server returned an error
-            const detail = data.detail || "Failed to shorten URL.";
-            showStatus(`❌ ${detail}`, "error");
-            return;
-        }
+  class ApiError extends Error {
+    constructor(message, status) { super(message); this.status = status; }
+  }
 
-        // Success — populate result card
-        clearStatus();
-        shortUrlDisplay.textContent = data.short_url;
-        shortUrlDisplay.href = data.short_url;
-        originalUrlDisplay.textContent = `Original: ${data.original_url}`;
-        expiresDisplay.textContent = data.expires_at
-            ? `Expires: ${formatDate(data.expires_at)}`
-            : "Expires: Never";
-
-        resultCard.classList.remove("hidden");
-        resultCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
+  async function api(path, options = {}, { onSlow } = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const slow = onSlow ? setTimeout(onSlow, SLOW_NOTICE_MS) : null;
+    try {
+      const res = await fetch(`${API_BASE}${path}`, { ...options, signal: controller.signal });
+      let data = null;
+      try { data = await res.json(); } catch { /* non-JSON body */ }
+      if (!res.ok) throw new ApiError(errorMessage(data, res.status), res.status);
+      return data;
     } catch (err) {
-        console.error("Shorten error:", err);
-        showStatus("❌ Network error — is the backend running?", "error");
+      if (err instanceof ApiError) throw err;
+      if (err.name === "AbortError") {
+        throw new ApiError("The server took too long to respond. Please try again.", 0);
+      }
+      throw new ApiError("Can't reach the SnapLink server. Check your connection and try again.", 0);
     } finally {
-        setLoading(false);
+      clearTimeout(timeout);
+      if (slow) clearTimeout(slow);
     }
-}
+  }
 
-// ──────────────────────────────────────────────
-// Copy Link
-// ──────────────────────────────────────────────
-async function copyLink() {
-    const shortUrl = shortUrlDisplay.textContent;
-    if (!shortUrl) return;
+  // ──────────────────────────────────────────────
+  // Validation
+  // ──────────────────────────────────────────────
+  /** Returns { url } or { error }. Adds https:// when the scheme is missing. */
+  function normalizeUrl(raw) {
+    let value = raw.trim();
+    if (!value) return { error: "Paste a link to shorten." };
+    if (/\s/.test(value)) return { error: "URLs can't contain spaces." };
+    if (!/^[a-z][a-z\d+.-]*:\/\//i.test(value)) value = `https://${value}`;
+
+    let parsed;
+    try { parsed = new URL(value); } catch { return { error: "That doesn't look like a valid URL." }; }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { error: "Only http:// and https:// links can be shortened." };
+    }
+    const host = parsed.hostname;
+    const looksLikeHost = host === "localhost" || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /\.[a-z]{2,}$/i.test(host);
+    if (!looksLikeHost) return { error: "Enter a full domain, like example.com." };
+    return { url: value };
+  }
+
+  function validateAlias(value) {
+    if (!value) return "";
+    if (!/^[a-z0-9]+$/i.test(value)) return "Use letters and numbers only (no spaces, dashes or symbols).";
+    if (value.length < 3 || value.length > 20) return "Aliases must be 3–20 characters long.";
+    return "";
+  }
+
+  urlInput.addEventListener("input", () => {
+    if (urlInput.getAttribute("aria-invalid")) setFieldError(urlInput, urlError, "");
+    if (formStatus.dataset.tone) setStatus("");
+  });
+  urlInput.addEventListener("blur", () => {
+    if (urlInput.value.trim()) {
+      const { error } = normalizeUrl(urlInput.value);
+      setFieldError(urlInput, urlError, error);
+    }
+  });
+  aliasInput.addEventListener("input", () => {
+    setFieldError(aliasInput, aliasError, validateAlias(aliasInput.value.trim()));
+  });
+
+  // ──────────────────────────────────────────────
+  // Shorten
+  // ──────────────────────────────────────────────
+  shortenForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setStatus("");
+
+    const { url, error } = normalizeUrl(urlInput.value);
+    setFieldError(urlInput, urlError, error);
+    const alias = aliasInput.value.trim();
+    const aliasProblem = validateAlias(alias);
+    setFieldError(aliasInput, aliasError, aliasProblem);
+
+    if (error) { urlInput.focus(); return; }
+    if (aliasProblem) { advanced.open = true; aliasInput.focus(); return; }
+
+    urlInput.value = url;
+    const body = { url };
+    if (alias) body.custom_code = alias;
+    if (expirySelect.value) body.expires_in_days = Number(expirySelect.value);
+
+    setLoading(shortenBtn, true, "Shortening…");
     try {
-        await navigator.clipboard.writeText(shortUrl);
-        const copyBtn = document.getElementById("copy-btn");
-        copyBtn.querySelector("span").textContent = "✅ Copied!";
-        setTimeout(() => {
-            copyBtn.querySelector("span").textContent = "📋 Copy";
-        }, 2000);
-    } catch {
-        // Fallback for older browsers
-        const input = document.createElement("input");
-        input.value = shortUrl;
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        document.body.removeChild(input);
-    }
-}
+      const data = await api("/shorten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }, {
+        onSlow: () => setStatus("Checking the destination and waking up the server. This can take up to a minute on the first request.", "info"),
+      });
 
-// ──────────────────────────────────────────────
-// Open Link in New Tab
-// ──────────────────────────────────────────────
-function openLink() {
-    const shortUrl = shortUrlDisplay.textContent;
-    if (shortUrl) window.open(shortUrl, "_blank", "noopener,noreferrer");
-}
-
-// ──────────────────────────────────────────────
-// Check / Verify Link (GET /preview/{short_code})
-// ──────────────────────────────────────────────
-async function checkLink() {
-    const shortUrl = shortUrlDisplay.textContent;
-    if (!shortUrl) return;
-
-    // Extract short_code from full URL
-    const shortCode = shortUrl.split("/").pop();
-
-    checkResult.className = "check-result";
-    checkResult.classList.remove("hidden");
-    checkResult.textContent = "⏳ Checking…";
-
-    try {
-        const res = await fetch(`${BASE_URL}/preview/${shortCode}`);
-        const data = await res.json();
-
-        if (res.ok) {
-            checkResult.classList.add("ok");
-            checkResult.innerHTML = `
-        ✅ Link is <strong>active</strong><br/>
-        Destination: <em>${data.original_url}</em><br/>
-        Total clicks: <strong>${data.total_clicks}</strong>
-      `;
-        } else {
-            checkResult.classList.add("fail");
-            checkResult.textContent = `❌ ${data.detail || "Link not found or expired."}`;
-        }
-    } catch {
-        checkResult.classList.add("fail");
-        checkResult.textContent = "❌ Network error while checking link.";
-    }
-}
-
-// ──────────────────────────────────────────────
-// Analytics Loader
-// ──────────────────────────────────────────────
-async function loadAnalytics() {
-    const code = document.getElementById("analytics-code").value.trim();
-    if (!code) {
-        alert("Please enter a short code.");
-        return;
-    }
-
-    const resultsDiv = document.getElementById("analytics-results");
-    resultsDiv.classList.add("hidden");
-
-    try {
-        const res = await fetch(`${BASE_URL}/analytics/${code}`);
-        const data = await res.json();
-
-        if (!res.ok) {
-            alert(data.detail || "Short code not found.");
-            return;
-        }
-
-        // Populate header
-        document.getElementById("a-short-code").textContent = `⚡ ${data.short_code}`;
-        const aUrl = document.getElementById("a-original-url");
-        aUrl.textContent = data.original_url;
-        aUrl.href = data.original_url;
-
-        document.getElementById("a-total-clicks").textContent = data.total_clicks;
-        document.getElementById("a-created").textContent = formatDate(data.created_at);
-        document.getElementById("a-expires").textContent = formatDate(data.expires_at);
-
-        // Render chart
-        renderChart(data.clicks_per_day);
-
-        // Render user agents
-        renderUserAgents(data.top_user_agents, data.total_clicks);
-
-        // Render recent clicks
-        renderClicksTable(data.recent_clicks);
-
-        resultsDiv.classList.remove("hidden");
-        resultsDiv.scrollIntoView({ behavior: "smooth", block: "start" });
-
+      setStatus("");
+      showResult(data);
+      saveRecent(data);
+      urlInput.value = "";
+      aliasInput.value = "";
     } catch (err) {
-        console.error("Analytics error:", err);
-        alert("Network error — is the backend running?");
+      if (err.status === 409) {
+        advanced.open = true;
+        setFieldError(aliasInput, aliasError, `"${alias}" is already taken. Try another alias.`);
+        aliasInput.focus();
+        setStatus("");
+      } else if (err.status === 400 && /not reachable/i.test(err.message)) {
+        setStatus(`We couldn't reach that page. ${err.message.replace(/^URL is not reachable:\s*/i, "")}`, "error");
+      } else {
+        setStatus(err.message, "error");
+      }
+    } finally {
+      setLoading(shortenBtn, false, "Shorten");
     }
-}
+  });
 
-// ──────────────────────────────────────────────
-// Render Bar Chart (clicks per day)
-// ──────────────────────────────────────────────
-function renderChart(clicksPerDay) {
-    const container = document.getElementById("chart-container");
-    container.innerHTML = "";
+  function showResult(data) {
+    currentResult = data;
+    shortUrlEl.textContent = prettyUrl(data.short_url);
+    shortUrlEl.href = data.short_url;
+    openBtn.href = data.short_url;
+    originalUrlEl.textContent = data.original_url;
+    originalUrlEl.href = data.original_url;
+    createdEl.textContent = formatDate(data.created_at);
+    expiresEl.textContent = data.expires_at ? `${formatDate(data.expires_at)} (${relativeTime(data.expires_at)})` : "Never";
+    resetCopyBtn();
+    resultCard.hidden = false;
+    resultCard.focus({ preventScroll: true });
+    resultCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 
-    if (!clicksPerDay || clicksPerDay.length === 0) {
-        container.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No click data yet.</span>`;
-        return;
+  function resetCopyBtn() {
+    copyBtn.classList.remove("is-success");
+    copyBtn.querySelector(".btn-label").textContent = "Copy";
+  }
+
+  let copyTimer;
+  copyBtn.addEventListener("click", async () => {
+    if (!currentResult) return;
+    const ok = await copyText(currentResult.short_url);
+    if (ok) {
+      copyBtn.classList.add("is-success");
+      copyBtn.querySelector(".btn-label").textContent = "Copied!";
+      toast("Link copied to clipboard");
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(resetCopyBtn, 2000);
+    } else {
+      toast("Couldn't copy. Select the link and copy it manually.");
     }
+  });
 
-    const maxCount = Math.max(...clicksPerDay.map(d => d.count));
+  statsBtn.addEventListener("click", () => {
+    if (currentResult) showAnalyticsFor(currentResult.short_code);
+  });
 
-    clicksPerDay.forEach(({ date, count }) => {
-        const heightPct = maxCount > 0 ? (count / maxCount) * 80 : 4;
-        const label = date.slice(5); // MM-DD
+  $("result-close").addEventListener("click", () => {
+    resultCard.hidden = true;
+    currentResult = null;
+    urlInput.focus();
+  });
 
-        const wrapper = document.createElement("div");
-        wrapper.className = "chart-bar-wrapper";
-        wrapper.title = `${date}: ${count} clicks`;
+  // ──────────────────────────────────────────────
+  // Recent links (localStorage)
+  // ──────────────────────────────────────────────
+  function loadRecent() {
+    try {
+      const items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      return Array.isArray(items) ? items.filter((i) => i && i.short_code && i.short_url) : [];
+    } catch {
+      return [];
+    }
+  }
 
-        const bar = document.createElement("div");
-        bar.className = "chart-bar";
-        bar.style.height = `${heightPct}px`;
+  function storeRecent(items) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, MAX_RECENT))); } catch { /* storage unavailable */ }
+  }
 
-        const dateLabel = document.createElement("div");
-        dateLabel.className = "chart-date";
-        dateLabel.textContent = label;
-
-        wrapper.appendChild(bar);
-        wrapper.appendChild(dateLabel);
-        container.appendChild(wrapper);
+  function saveRecent(data) {
+    const items = loadRecent().filter((i) => i.short_code !== data.short_code);
+    items.unshift({
+      short_code: data.short_code,
+      short_url: data.short_url,
+      original_url: data.original_url,
+      created_at: data.created_at,
+      expires_at: data.expires_at || null,
     });
-}
+    storeRecent(items);
+    renderRecent();
+  }
 
-// ──────────────────────────────────────────────
-// Render User Agents Bar List
-// ──────────────────────────────────────────────
-function renderUserAgents(userAgents, totalClicks) {
-    const container = document.getElementById("ua-table");
-    container.innerHTML = "";
+  function renderRecent() {
+    const items = loadRecent();
+    recentList.replaceChildren(...items.map((item) => {
+      const li = recentTpl.content.firstElementChild.cloneNode(true);
+      li.dataset.code = item.short_code;
+      const a = li.querySelector(".recent-short");
+      a.href = item.short_url;
+      a.textContent = prettyUrl(item.short_url);
+      const orig = li.querySelector(".recent-original");
+      orig.textContent = item.original_url;
+      orig.title = item.original_url;
+      const meta = li.querySelector(".recent-meta");
+      if (isExpired(item.expires_at)) {
+        meta.textContent = "Expired";
+        meta.classList.add("is-expired");
+      } else {
+        meta.textContent = relativeTime(item.created_at);
+        meta.title = formatDate(item.created_at);
+      }
+      return li;
+    }));
+    clearRecentBtn.hidden = items.length === 0;
+  }
 
-    if (!userAgents || userAgents.length === 0) {
-        container.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No data yet.</span>`;
-        return;
+  recentList.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const code = btn.closest(".recent-item").dataset.code;
+    const item = loadRecent().find((i) => i.short_code === code);
+    if (!item) return;
+
+    if (btn.dataset.action === "copy") {
+      const ok = await copyText(item.short_url);
+      toast(ok ? "Link copied to clipboard" : "Couldn't copy the link");
+      if (ok) {
+        btn.classList.add("is-success");
+        setTimeout(() => btn.classList.remove("is-success"), 1500);
+      }
+    } else if (btn.dataset.action === "stats") {
+      showAnalyticsFor(code);
+    } else if (btn.dataset.action === "remove") {
+      storeRecent(loadRecent().filter((i) => i.short_code !== code));
+      renderRecent();
+      toast("Removed from your list");
+    }
+  });
+
+  clearRecentBtn.addEventListener("click", () => {
+    if (!confirm("Remove all links from this list? The short links themselves keep working.")) return;
+    storeRecent([]);
+    renderRecent();
+  });
+
+  // ──────────────────────────────────────────────
+  // Analytics
+  // ──────────────────────────────────────────────
+  /** Accepts "abc123" or "https://host/abc123" and returns the code. */
+  function extractCode(raw) {
+    const value = raw.trim();
+    if (!value) return "";
+    if (/^[a-z]+:\/\//i.test(value) || value.includes("/")) {
+      try {
+        const u = new URL(/^[a-z]+:\/\//i.test(value) ? value : `https://${value}`);
+        return u.pathname.split("/").filter(Boolean).pop() || "";
+      } catch { return ""; }
+    }
+    return value;
+  }
+
+  function showAnalyticsFor(code) {
+    analyticsInput.value = code;
+    analyticsForm.requestSubmit();
+  }
+
+  analyticsInput.addEventListener("input", () => setFieldError(analyticsInput, analyticsError, ""));
+
+  analyticsForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = extractCode(analyticsInput.value);
+    if (!code) {
+      setFieldError(analyticsInput, analyticsError, "Enter a short code like 68g9xMH, or paste a full short link.");
+      analyticsInput.focus();
+      return;
+    }
+    if (!/^[a-z0-9]+$/i.test(code)) {
+      setFieldError(analyticsInput, analyticsError, "Short codes only contain letters and numbers.");
+      return;
+    }
+    setFieldError(analyticsInput, analyticsError, "");
+    setLoading(analyticsBtn, true, "Loading…");
+    try {
+      const data = await api(`/analytics/${encodeURIComponent(code)}`);
+      renderAnalytics(data);
+      analyticsResults.hidden = false;
+      analyticsResults.focus({ preventScroll: true });
+      analyticsResults.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      analyticsResults.hidden = true;
+      const msg = err.status === 404 ? `No link found for "${code}". Check the code and try again.` : err.message;
+      setFieldError(analyticsInput, analyticsError, msg);
+      document.getElementById("analytics").scrollIntoView({ behavior: "smooth", block: "start" });
+    } finally {
+      setLoading(analyticsBtn, false, "View stats");
+    }
+  });
+
+  function renderAnalytics(data) {
+    $("a-short-code").textContent = `${hostOf(API_BASE)}/${data.short_code}`;
+    const orig = $("a-original-url");
+    orig.textContent = data.original_url;
+    orig.href = data.original_url;
+
+    const state = $("a-state");
+    if (isExpired(data.expires_at)) {
+      state.textContent = "Expired";
+      state.className = "badge badge-danger";
+    } else {
+      state.textContent = "Active";
+      state.className = "badge badge-success";
     }
 
-    const maxCount = Math.max(...userAgents.map(u => u.count));
+    $("a-total-clicks").textContent = data.total_clicks.toLocaleString();
+    $("a-created").textContent = formatDate(data.created_at, false);
+    $("a-expires").textContent = data.expires_at ? formatDate(data.expires_at, false) : "Never";
 
-    userAgents.forEach(({ user_agent, count }) => {
-        const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+    const days = lastNDays(data.clicks_per_day || [], 14);
+    const week = days.slice(-7).reduce((sum, d) => sum + d.count, 0);
+    $("a-week-clicks").textContent = week.toLocaleString();
 
-        const row = document.createElement("div");
-        row.className = "ua-row";
-        row.innerHTML = `
-      <div class="ua-agent" title="${user_agent}">${user_agent || "Unknown"}</div>
-      <div class="ua-bar-bg"><div class="ua-bar-fill" style="width:${pct}%"></div></div>
-      <div class="ua-label">${count}</div>
-    `;
-        container.appendChild(row);
-    });
-}
+    renderChart(days);
+    renderUserAgents(data.top_user_agents || []);
+    renderClicksTable(data.recent_clicks || []);
+  }
 
-// ──────────────────────────────────────────────
-// Render Recent Clicks Table
-// ──────────────────────────────────────────────
-function renderClicksTable(recentClicks) {
-    const tbody = document.getElementById("clicks-tbody");
-    tbody.innerHTML = "";
+  /** Fill in zero-click days so the chart always shows a continuous range. */
+  function lastNDays(clicksPerDay, n) {
+    const byDate = new Map(clicksPerDay.map((d) => [d.date, d.count]));
+    const out = [];
+    const today = new Date();
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
+      const key = d.toISOString().slice(0, 10);
+      out.push({ date: key, count: byDate.get(key) || 0, d });
+    }
+    return out;
+  }
 
-    if (!recentClicks || recentClicks.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text-muted)">No clicks recorded yet.</td></tr>`;
-        return;
+  function renderChart(days) {
+    const container = $("chart-container");
+    container.replaceChildren();
+    const max = Math.max(...days.map((d) => d.count));
+    const total = days.reduce((s, d) => s + d.count, 0);
+    container.setAttribute("role", "img");
+    container.setAttribute("aria-label", `${total} clicks in the last ${days.length} days`);
+
+    if (total === 0) {
+      const p = document.createElement("p");
+      p.className = "muted-note";
+      p.textContent = "No clicks in the last 14 days. Share your link to start collecting data.";
+      container.appendChild(p);
+      return;
     }
 
-    recentClicks.forEach(({ timestamp, ip_address, user_agent }) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-      <td>${formatDate(timestamp)}</td>
-      <td>${ip_address || "—"}</td>
-      <td title="${user_agent || ""}">${(user_agent || "—").slice(0, 60)}</td>
-    `;
-        tbody.appendChild(tr);
-    });
-}
+    for (const { count, d } of days) {
+      const col = document.createElement("div");
+      col.className = "chart-col";
+      const label = d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+      col.title = `${label}: ${count} click${count === 1 ? "" : "s"}`;
 
-// ──────────────────────────────────────────────
-// Allow pressing Enter in the URL input
-// ──────────────────────────────────────────────
-urlInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") shortenUrl();
-});
+      const track = document.createElement("div");
+      track.className = "chart-bar-track";
+      const bar = document.createElement("div");
+      bar.className = "chart-bar" + (count === 0 ? " is-zero" : "");
+      bar.style.height = count === 0 ? "3px" : `${Math.max(6, (count / max) * 100)}%`;
+      track.appendChild(bar);
 
-document.getElementById("analytics-code").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") loadAnalytics();
-});
+      const lbl = document.createElement("span");
+      lbl.className = "chart-label";
+      lbl.textContent = String(d.getUTCDate());
+
+      col.append(track, lbl);
+      container.appendChild(col);
+    }
+  }
+
+  /** Summarise a user-agent string as "Browser · OS". */
+  function describeUA(ua) {
+    if (!ua || ua === "unknown") return "Unknown";
+    const browser =
+      /Edg\//.test(ua) ? "Edge" :
+      /OPR\/|Opera/.test(ua) ? "Opera" :
+      /Firefox\//.test(ua) ? "Firefox" :
+      /Chrome\//.test(ua) ? "Chrome" :
+      /Safari\//.test(ua) ? "Safari" :
+      /curl\//i.test(ua) ? "curl" :
+      /bot|crawler|spider|preview/i.test(ua) ? "Bot / link preview" :
+      /python|httpx|requests/i.test(ua) ? "Script" :
+      ua.split(/[\s/]/)[0] || "Other";
+    const os =
+      /Android/.test(ua) ? "Android" :
+      /iPhone|iPad|iOS/.test(ua) ? "iOS" :
+      /Windows/.test(ua) ? "Windows" :
+      /Mac OS X|Macintosh/.test(ua) ? "macOS" :
+      /Linux/.test(ua) ? "Linux" : "";
+    return os ? `${browser} · ${os}` : browser;
+  }
+
+  function renderUserAgents(list) {
+    const container = $("ua-table");
+    container.replaceChildren();
+    if (!list.length) {
+      const li = document.createElement("li");
+      li.className = "muted-note";
+      li.textContent = "No visits yet.";
+      container.appendChild(li);
+      return;
+    }
+    const max = Math.max(...list.map((u) => u.count));
+    for (const { user_agent, count } of list) {
+      const li = document.createElement("li");
+      li.className = "ua-row";
+      const name = document.createElement("span");
+      name.className = "ua-name";
+      name.textContent = describeUA(user_agent);
+      name.title = user_agent || "Unknown";
+      const c = document.createElement("span");
+      c.className = "ua-count";
+      c.textContent = count.toLocaleString();
+      const bar = document.createElement("span");
+      bar.className = "ua-bar";
+      const fill = document.createElement("span");
+      fill.style.width = `${(count / max) * 100}%`;
+      bar.appendChild(fill);
+      li.append(name, c, bar);
+      container.appendChild(li);
+    }
+  }
+
+  function renderClicksTable(clicks) {
+    const tbody = $("clicks-tbody");
+    tbody.replaceChildren();
+    if (!clicks.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.className = "muted-note";
+      td.textContent = "No clicks recorded yet.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    for (const { timestamp, ip_address, user_agent } of clicks) {
+      const tr = document.createElement("tr");
+      const cells = [
+        [formatDate(timestamp), ""],
+        [ip_address || "—", "mono"],
+        [describeUA(user_agent), ""],
+      ];
+      for (const [text, cls] of cells) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (cls) td.className = cls;
+        tr.appendChild(td);
+      }
+      tr.lastChild.title = user_agent || "";
+      tr.firstChild.title = relativeTime(timestamp);
+      tbody.appendChild(tr);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Backend status
+  // ──────────────────────────────────────────────
+  async function checkHealth() {
+    const text = apiStatus.querySelector(".api-status-text");
+    apiStatus.dataset.state = "checking";
+    text.textContent = "Connecting…";
+    try {
+      const data = await api("/health");
+      const ok = data.status === "healthy";
+      apiStatus.dataset.state = ok ? "ok" : "degraded";
+      text.textContent = ok ? "All systems normal" : "Degraded";
+      apiStatus.title = `Database: ${data.database}, cache: ${data.cache}`;
+    } catch {
+      apiStatus.dataset.state = "down";
+      text.textContent = "Server offline";
+      apiStatus.title = `Can't reach ${API_BASE}`;
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Init
+  // ──────────────────────────────────────────────
+  renderRecent();
+  checkHealth();
+})();
