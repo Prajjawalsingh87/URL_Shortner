@@ -2,253 +2,309 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SnapLink — URL Shortener</title>
-  <meta name="description" content="Transform long URLs into short, shareable links instantly. Free URL shortener with analytics." />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SnapLink · Fast, trackable short links</title>
+  <meta name="description" content="SnapLink turns long URLs into short, shareable links with custom aliases, expiry dates and click analytics." />
+  <meta name="theme-color" content="#4f46e5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0b0d14" media="(prefers-color-scheme: dark)" />
+  <meta name="color-scheme" content="light dark" />
+  <meta property="og:title" content="SnapLink · Fast, trackable short links" />
+  <meta property="og:description" content="Shorten URLs, set custom aliases and expiry dates, and see who clicked." />
+  <meta property="og:type" content="website" />
+
+  <!--
+    API base URL. Leave empty to auto-detect:
+      - localhost / 127.0.0.1  -> same host on port 8000
+      - anything else          -> the production API in script.js
+    Override per deploy by setting content="https://your-api.example.com",
+    or for a single session with ?api=https://your-api.example.com
+  -->
+  <meta name="snaplink-api" content="" />
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="bg-mesh"></div>
-  <div class="bg-orb orb-one"></div>
-  <div class="bg-orb orb-two"></div>
-  <div class="noise"></div>
+  <a class="skip-link" href="#url-input">Skip to the link form</a>
 
-  <header class="header">
-    <a href="#shorten" class="brand">
-      <span class="brand-mark">S</span>
-      <span class="brand-name">SnapLink</span>
-    </a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="#top" class="brand" aria-label="SnapLink home">
+        <img src="favicon.svg" alt="" width="32" height="32" class="brand-mark" />
+        <span class="brand-name">SnapLink</span>
+      </a>
 
-    <nav class="nav">
-      <a href="#shorten" class="nav-link">Create</a>
-      <a href="#analytics-section" class="nav-link">Analytics</a>
-      <a href="#" id="api-docs-link" target="_blank" class="nav-link nav-link-strong">API Docs</a>
-    </nav>
+      <nav class="nav" aria-label="Main">
+        <a href="#top" class="nav-link nav-link-home">Shorten</a>
+        <a href="#recent" class="nav-link">My links</a>
+        <a href="#analytics" class="nav-link">Analytics</a>
+        <a href="#" id="api-docs-link" class="nav-link nav-link-hide-sm" target="_blank" rel="noopener">API</a>
+      </nav>
+
+      <span class="api-status" id="api-status" role="status" aria-live="polite" title="Backend status">
+        <span class="api-dot" aria-hidden="true"></span>
+        <span class="api-status-text">Checking…</span>
+      </span>
+    </div>
   </header>
 
-  <main>
-    <section class="hero-shell" id="shorten">
-      <div class="hero-copy">
-        <div class="eyebrow-row">
-          <span class="hero-badge">No login. No drag. Just links.</span>
-          <span class="hero-chip">built for launch days</span>
-        </div>
+  <main id="top">
+    <!-- ───────── Hero + form ───────── -->
+    <section class="hero">
+      <div class="container hero-inner">
+        <p class="eyebrow">Free URL shortener with analytics</p>
+        <h1 class="hero-title">Long links in, <span class="accent">short links out.</span></h1>
+        <p class="hero-sub">Paste any URL to get a clean, shareable link. Add a custom alias or an expiry date, then see exactly how it performs.</p>
 
-        <h1 class="hero-title">
-          Turn messy links
-          <span class="hero-title-accent">into clean flexes.</span>
-        </h1>
-
-        <p class="hero-sub">
-          Shorten URLs, drop custom codes, and peek at click energy without opening another tab jungle.
-        </p>
-
-        <div class="hero-stat-row">
-          <div class="hero-stat">
-            <span class="hero-stat-value">Fast</span>
-            <span class="hero-stat-label">instant redirects</span>
+        <form class="card shorten-card" id="shorten-form" novalidate>
+          <label for="url-input" class="field-label">Destination URL</label>
+          <div class="url-row">
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
+              <input
+                type="url"
+                id="url-input"
+                name="url"
+                class="input input-lg"
+                placeholder="https://example.com/a/very/long/link?utm_source=…"
+                autocomplete="url"
+                inputmode="url"
+                spellcheck="false"
+                aria-describedby="url-error"
+                required
+              />
+            </div>
+            <button type="submit" id="shorten-btn" class="btn btn-primary btn-lg">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-label">Shorten</span>
+            </button>
           </div>
-          <div class="hero-stat">
-            <span class="hero-stat-value">Smart</span>
-            <span class="hero-stat-label">analytics on every click</span>
-          </div>
-          <div class="hero-stat">
-            <span class="hero-stat-value">Clean</span>
-            <span class="hero-stat-label">custom codes when needed</span>
-          </div>
-        </div>
+          <p class="field-error" id="url-error" role="alert"></p>
 
-        <div class="culture-strip">
-          <span>share links that don’t look cursed</span>
-          <span>preview before you trust</span>
-          <span>track what actually lands</span>
-        </div>
-      </div>
+          <details class="advanced" id="advanced">
+            <summary>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+              Advanced options
+              <span class="advanced-hint">custom alias, expiry</span>
+            </summary>
+            <div class="advanced-grid">
+              <div class="field">
+                <label for="custom-code" class="field-label">Custom alias <span class="optional">optional</span></label>
+                <div class="prefix-input">
+                  <span class="prefix" id="alias-prefix">snaplink/</span>
+                  <input type="text" id="custom-code" name="custom_code" class="input" placeholder="summer24" maxlength="20" autocomplete="off" spellcheck="false" aria-describedby="alias-help alias-error" />
+                </div>
+                <p class="field-help" id="alias-help">3–20 letters or numbers.</p>
+                <p class="field-error" id="alias-error" role="alert"></p>
+              </div>
+              <div class="field">
+                <label for="expiry-days" class="field-label">Expires after <span class="optional">optional</span></label>
+                <select id="expiry-days" name="expires_in_days" class="input select">
+                  <option value="">Never</option>
+                  <option value="1">1 day</option>
+                  <option value="7">7 days</option>
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="365">1 year</option>
+                </select>
+                <p class="field-help">Expired links stop redirecting.</p>
+              </div>
+            </div>
+          </details>
 
-      <div class="hero-panel-wrap">
-        <div class="floating-note note-top">new drop</div>
-        <div class="floating-note note-bottom">analytics ready</div>
+          <div class="form-status" id="form-status" role="status" aria-live="polite"></div>
+        </form>
 
-        <div class="card input-card" id="main-card">
-          <div class="card-kicker">Create a short link</div>
-          <div class="card-title-row">
-            <h2 class="card-title">Paste. Trim. Ship.</h2>
-            <span class="card-pill">live</span>
-          </div>
-
-          <div class="input-group">
-            <span class="input-icon">link</span>
-            <input
-              type="url"
-              id="url-input"
-              class="url-input"
-              placeholder="https://your-very-long-url.com/some/path?with=query&params=here"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <button id="shorten-btn" class="btn btn-primary" onclick="shortenUrl()">
-              <span class="btn-text">Shorten</span>
-              <span class="btn-loader hidden">
-                <span class="spinner"></span>
-              </span>
+        <!-- Result -->
+        <section class="card result-card" id="result-card" hidden aria-labelledby="result-title" tabindex="-1">
+          <div class="result-head">
+            <span class="badge badge-success">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>
+              <span id="result-title">Your link is ready</span>
+            </span>
+            <button type="button" class="icon-btn" id="result-close" aria-label="Dismiss result">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
             </button>
           </div>
 
-          <div class="options-row">
-            <div class="option-group">
-              <label for="custom-code">Custom code</label>
-              <input type="text" id="custom-code" class="option-input" placeholder="drop-name" maxlength="20" />
-            </div>
-            <div class="option-group">
-              <label for="expiry-days">Expiry in days</label>
-              <input type="number" id="expiry-days" class="option-input" placeholder="Never" min="1" max="365" />
-            </div>
-          </div>
-
-          <div class="status-row">
-            <div id="status-msg" class="status-msg hidden"></div>
-          </div>
-
-          <div class="mini-grid">
-            <div class="mini-card">
-              <span class="mini-title">Custom slugs</span>
-              <span class="mini-text">Make campaign links memorable.</span>
-            </div>
-            <div class="mini-card">
-              <span class="mini-title">Expiry support</span>
-              <span class="mini-text">Run time-boxed drops without cleanup.</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="card result-card hidden" id="result-card">
-          <div class="result-header">
-            <span class="result-label">Link is ready to post</span>
-          </div>
-          <div class="result-url-row">
-            <a id="short-url-display" href="#" target="_blank" class="short-url-link"></a>
+          <div class="result-link-row">
+            <a id="short-url-display" class="short-url" href="#" target="_blank" rel="noopener"></a>
             <div class="result-actions">
-              <button class="btn btn-ghost" id="copy-btn" onclick="copyLink()" title="Copy">
-                <span>Copy</span>
+              <button type="button" class="btn btn-primary" id="copy-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+                <span class="btn-label">Copy</span>
               </button>
-              <button class="btn btn-ghost" id="open-btn" onclick="openLink()" title="Open">
-                <span>Open</span>
-              </button>
-              <button class="btn btn-ghost" id="check-btn" onclick="checkLink()" title="Verify">
-                <span>Check</span>
+              <a class="btn btn-secondary" id="open-btn" href="#" target="_blank" rel="noopener">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+                <span class="btn-label">Open</span>
+              </a>
+              <button type="button" class="btn btn-secondary" id="stats-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+                <span class="btn-label">Stats</span>
               </button>
             </div>
           </div>
-          <div class="result-meta">
-            <span id="original-url-display" class="meta-item"></span>
-            <span id="expires-display" class="meta-item"></span>
+
+          <dl class="result-meta">
+            <div class="meta-row meta-row-wide">
+              <dt>Destination</dt>
+              <dd><a id="original-url-display" href="#" target="_blank" rel="noopener noreferrer"></a></dd>
+            </div>
+            <div class="meta-row">
+              <dt>Created</dt>
+              <dd id="created-display"></dd>
+            </div>
+            <div class="meta-row">
+              <dt>Expires</dt>
+              <dd id="expires-display"></dd>
+            </div>
+          </dl>
+        </section>
+
+        <ul class="trust-row" aria-label="Features">
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Cached redirects</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Click analytics</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 2"/></svg>Optional expiry</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h7M16 19l2 2 4-4"/></svg>No sign-up</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ───────── Recent links ───────── -->
+    <section class="section" id="recent" aria-labelledby="recent-title">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title" id="recent-title">Your recent links</h2>
+            <p class="section-sub">Saved in this browser only. Nobody else can see this list.</p>
           </div>
-          <div id="check-result" class="check-result hidden"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="clear-recent" hidden>Clear all</button>
+        </div>
+
+        <div class="card list-card">
+          <ul class="recent-list" id="recent-list"></ul>
+          <div class="empty-state" id="recent-empty">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
+            <p class="empty-title">No links yet</p>
+            <p class="empty-text">Links you shorten will show up here so you can copy them again or check their stats.</p>
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="feature-band" aria-label="product highlights">
-      <div class="feature-band-card">
-        <span class="feature-band-label">verify</span>
-        <p>Preview every short code before sending traffic.</p>
-      </div>
-      <div class="feature-band-card">
-        <span class="feature-band-label">track</span>
-        <p>Watch clicks, dates, IPs, and user agents in one place.</p>
-      </div>
-      <div class="feature-band-card">
-        <span class="feature-band-label">repeat</span>
-        <p>Reuse the same destination without generating noisy duplicates.</p>
-      </div>
-    </section>
+    <!-- ───────── Analytics ───────── -->
+    <section class="section" id="analytics" aria-labelledby="analytics-title">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title" id="analytics-title">Link analytics</h2>
+            <p class="section-sub">Enter a short code or paste a full short link to see its clicks.</p>
+          </div>
+        </div>
 
-    <section class="analytics-section" id="analytics-section">
-      <div class="section-heading">
-        <span class="section-kicker">Signal check</span>
-        <h2 class="section-title">See whether your short link actually hit.</h2>
-        <p class="section-sub">Drop any code below to pull click history, device behavior, and recent traffic.</p>
-      </div>
-
-      <div class="card analytics-input-card">
-        <div class="analytics-search-row">
-          <div class="input-group">
-            <span class="input-icon">scan</span>
-            <input
-              type="text"
-              id="analytics-code"
-              class="url-input"
-              placeholder="Enter short code"
-              maxlength="20"
-            />
-            <button class="btn btn-primary" onclick="loadAnalytics()">
-              <span>Analyze</span>
+        <form class="card analytics-form" id="analytics-form" novalidate>
+          <label for="analytics-code" class="sr-only">Short code or short link</label>
+          <div class="url-row">
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input type="text" id="analytics-code" class="input input-lg" placeholder="e.g. 68g9xMH or a full short link" autocomplete="off" spellcheck="false" aria-describedby="analytics-error" />
+            </div>
+            <button type="submit" id="analytics-btn" class="btn btn-secondary btn-lg">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-label">View stats</span>
             </button>
           </div>
-        </div>
-      </div>
+          <p class="field-error" id="analytics-error" role="alert"></p>
+        </form>
 
-      <div class="card analytics-results hidden" id="analytics-results">
-        <div class="analytics-header">
-          <div class="analytics-identity">
-            <span class="analytics-label">Link profile</span>
-            <h3 id="a-short-code" class="a-code"></h3>
-            <a id="a-original-url" href="#" target="_blank" class="a-original-url"></a>
+        <div class="analytics-results" id="analytics-results" hidden tabindex="-1">
+          <div class="card a-header">
+            <div class="a-identity">
+              <span class="a-label">Short link</span>
+              <p class="a-code" id="a-short-code"></p>
+              <a id="a-original-url" class="a-original" href="#" target="_blank" rel="noopener noreferrer"></a>
+            </div>
+            <span class="badge" id="a-state"></span>
           </div>
-          <div class="stats-grid">
-            <div class="stat-chip">
+
+          <div class="stat-grid">
+            <div class="card stat">
               <span class="stat-label">Total clicks</span>
               <span class="stat-value" id="a-total-clicks">0</span>
             </div>
-            <div class="stat-chip">
+            <div class="card stat">
+              <span class="stat-label">Last 7 days</span>
+              <span class="stat-value" id="a-week-clicks">0</span>
+            </div>
+            <div class="card stat">
               <span class="stat-label">Created</span>
-              <span class="stat-value stat-value-small" id="a-created"></span>
+              <span class="stat-value stat-value-sm" id="a-created"></span>
             </div>
-            <div class="stat-chip">
+            <div class="card stat">
               <span class="stat-label">Expires</span>
-              <span class="stat-value stat-value-small" id="a-expires">Never</span>
+              <span class="stat-value stat-value-sm" id="a-expires"></span>
             </div>
           </div>
-        </div>
 
-        <div class="analytics-grid">
-          <div class="analytics-block">
-            <h4 class="chart-title">Clicks by day</h4>
-            <div id="chart-container" class="chart-container"></div>
+          <div class="a-grid">
+            <div class="card a-block">
+              <h3 class="block-title">Clicks, last 14 days</h3>
+              <div class="chart" id="chart-container"></div>
+            </div>
+            <div class="card a-block">
+              <h3 class="block-title">Top browsers &amp; devices</h3>
+              <ul class="ua-list" id="ua-table"></ul>
+            </div>
           </div>
 
-          <div class="analytics-block">
-            <h4 class="chart-title">Top user agents</h4>
-            <div id="ua-table" class="ua-table"></div>
-          </div>
-        </div>
-
-        <div class="analytics-block table-block">
-          <h4 class="chart-title">Recent clicks</h4>
-          <div class="table-wrapper">
-            <table id="clicks-table" class="clicks-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>IP Address</th>
-                  <th>User Agent</th>
-                </tr>
-              </thead>
-              <tbody id="clicks-tbody"></tbody>
-            </table>
+          <div class="card a-block">
+            <h3 class="block-title">Recent clicks</h3>
+            <div class="table-wrap">
+              <table class="clicks-table">
+                <thead>
+                  <tr><th scope="col">Time</th><th scope="col">Visitor IP</th><th scope="col">Browser</th></tr>
+                </thead>
+                <tbody id="clicks-tbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
     </section>
   </main>
 
-  <footer class="footer">
-    <span>SnapLink for fast drops, campaigns, and clean shares.</span>
-    <span>FastAPI + PostgreSQL + Redis</span>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span><strong>SnapLink</strong> · short links with analytics</span>
+      <span class="footer-muted">Built with FastAPI, PostgreSQL and Redis</span>
+    </div>
   </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <template id="recent-item-tpl">
+    <li class="recent-item">
+      <div class="recent-main">
+        <a class="recent-short" target="_blank" rel="noopener"></a>
+        <span class="recent-original"></span>
+      </div>
+      <span class="recent-meta"></span>
+      <div class="recent-actions">
+        <button type="button" class="icon-btn" data-action="copy" aria-label="Copy link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+        </button>
+        <button type="button" class="icon-btn" data-action="stats" aria-label="View stats">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        </button>
+        <button type="button" class="icon-btn icon-btn-danger" data-action="remove" aria-label="Remove from list">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+        </button>
+      </div>
+    </li>
+  </template>
 
   <script src="script.js"></script>
 </body>
