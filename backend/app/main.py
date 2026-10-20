@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-from .database import engine, Base
+from .database import ensure_tables
 from .routes import router
 from .cache import init_redis, close_redis
 
@@ -31,8 +31,8 @@ async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
     logger.info("🚀 Starting URL Shortener service...")
 
-    # Create all database tables (idempotent)
-    Base.metadata.create_all(bind=engine)
+    # Create all database tables (idempotent; get_db also does this on first use)
+    ensure_tables()
     logger.info("✅ Database tables ready")
 
     # Initialize Redis connection

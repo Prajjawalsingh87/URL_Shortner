@@ -20,9 +20,9 @@ SnapLink transforms long URLs into compact, shareable links using **Base62 encod
 
 ## 🌐 Live Demo
 
-- Frontend: https://url-shortner-1-xyqj.onrender.com
-- Backend API: https://url-shortner-xzz7.onrender.com
-- API Docs: https://url-shortner-xzz7.onrender.com/docs
+- Frontend: https://snaplink-ten-eosin.vercel.app
+- Backend API: https://snaplink-api-six.vercel.app (Vercel serverless + Neon Postgres)
+- API Docs: https://snaplink-api-six.vercel.app/docs
 
 ### Architecture
 
@@ -325,3 +325,14 @@ This avoids needing a new browser CORS origin. Custom domains must set the
 
 PostgreSQL, Redis and the FastAPI backend remain separate services on Render.
 Deploying the frontend does not provision a database or migrate backend data.
+
+## Deploying on Vercel (current setup)
+
+- **Backend** (`backend/`) runs as a Python serverless function on the Vercel project `snaplink-api`
+  (`backend/api/index.py` + `backend/vercel.json`). Database: **Neon Postgres** from the Vercel
+  Marketplace, which sets `DATABASE_URL` automatically. Also set `BASE_URL`
+  (`https://snaplink-ten-eosin.vercel.app`) and `ALLOWED_ORIGINS`. Redis is optional: without
+  `REDIS_URL` the cache is simply off. Deploy with `cd backend && vercel deploy --prod`.
+- **Frontend** (`frontend/`) is the Vercel project `snaplink`. Its `vercel.json` proxies `/api/*`
+  to the backend and forwards short codes (`/AbC123`) to the backend's redirect endpoint, so short
+  links live on the frontend's domain.
