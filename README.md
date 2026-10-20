@@ -26,6 +26,8 @@ SnapLink transforms long URLs into compact, shareable links using **Base62 encod
 - **Bulk shorten**: paste up to 20 URLs (one per line) and get a list back with **Copy all** and **Download CSV**. Each line succeeds or fails on its own.
 - **Click analytics**: clicks per day plus top **countries**, **devices**, **browsers**, **operating systems** and **referrers**, and a recent-clicks table.
 - **Recent links** saved in the browser, with search and JSON export.
+- **Accounts + "My links" dashboard**: optional email/password sign-up. Links created while logged in belong to you and show up in the dashboard (any device) with click counts, created/expiry dates and search; change or remove a link's expiry, or delete it. Anonymous shortening keeps working.
+- **Password-protected links**: set an optional password when creating a link; visitors get a small password page first (wrong guesses are rate-limited) and the click is recorded once they get in. Only the owner can see a protected link's destination and stats.
 
 ## 🌐 Live Demo
 
@@ -89,7 +91,10 @@ cp .env.example .env
 | `REDIS_PASSWORD`    | Redis server password                | *(required)*                   |
 | `CACHE_TTL_SECONDS` | Redis cache TTL                      | `3600`                         |
 | `BASE_URL`          | Public backend URL for short links   | `http://localhost:8000`        |
-| `ALLOWED_ORIGINS`   | CORS allowed frontend origins        | `http://localhost:3000,...`    |
+| `ALLOWED_ORIGINS`   | CORS allowed frontend origins (also the origins allowed to make logged-in changes) | `http://localhost:3000,...` |
+| `JWT_SECRET`        | Signs session cookies. **Required** on Vercel (set per environment with `vercel env add JWT_SECRET production` / `preview`); random per process in local dev | *(required in prod)* |
+| `COOKIE_SECURE`     | `0` only for plain-http local dev    | `1`                            |
+| `BCRYPT_ROUNDS`     | bcrypt cost factor                   | `12`                           |
 
 ---
 
@@ -184,12 +189,40 @@ URLs are checked concurrently (10 at a time) and each one reuses the single `/sh
 
 ---
 
+### Accounts
+
+Sessions are a signed JWT in an **httpOnly, Secure, SameSite=Lax** cookie (`snaplink_session`,
+7 days). Browsers must send `credentials: "include"`; the frontend reaches the API through its own
+`/api` proxy, so the cookie is first-party.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/auth/signup` | `{"email", "password"}` (8–72 bytes). 409 if the email exists. Logs you in. |
+| `POST` | `/auth/login` | 401 on a wrong email/password; 429 after 5 failures per email or 20 per IP in 15 min |
+| `POST` | `/auth/logout` | Clears the cookie |
+| `GET` | `/auth/me` | The current user, or 401 |
+| `GET` | `/me/links?q=` | Your links with `total_clicks`, `expires_at`, `expired`, `password_protected`; `q` searches URL, title and code |
+| `PATCH` | `/links/{code}` | `{"expires_in_days": 7}` or `{"expires_in_days": null}` to never expire. Owner only (403 otherwise) |
+| `DELETE` | `/links/{code}` | Deletes the link and its clicks. Owner only |
+
+`POST /shorten` and `POST /shorten/bulk` attach new links to the logged-in user (if any) and accept
+an optional `"password"` (4–72 bytes) on `/shorten` for a protected link. The response includes
+`password_protected` and `owned`.
+
+---
+
 ### GET `/{short_code}` — Redirect
 
 ```bash
 curl -L http://localhost:8000/aB3kX9z
 # → 302 redirect to original URL
 ```
+
+For a **password-protected** link this returns a small password page instead (no scripts,
+strict CSP, `no-store`); the page POSTs to `/{short_code}`, which answers `401` with the page again
+on a wrong password, `429` after 5 wrong tries per link and IP in 15 minutes, and `303` to the
+destination on success (the click is recorded then). `/preview` and `/analytics` return `403` for
+protected links unless you are the owner.
 
 Each redirect records a click with the visitor IP (first `X-Forwarded-For` hop), user agent,
 **country** (from Vercel's `x-vercel-ip-country` header; blank outside Vercel, no paid geo-IP
@@ -280,7 +313,26 @@ CREATE TABLE urls (
   is_active    BOOLEAN DEFAULT TRUE,
   title        TEXT,          -- link preview
   description  TEXT,
-  image_url    TEXT
+  image_url    TEXT,
+  owner_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- NULL = anonymous
+  password_hash TEXT                                              -- bcrypt; NULL = not protected
+);
+
+-- Accounts
+CREATE TABLE users (
+  id            SERIAL PRIMARY KEY,
+  email         VARCHAR(254) UNIQUE NOT NULL,   -- lower-cased
+  password_hash TEXT NOT NULL,                  -- bcrypt
+  created_at    TIMESTAMP DEFAULT NOW()
+);
+
+-- Failed logins / link-password guesses / sign-ups, for rate limiting
+-- (in the database because serverless instances share no memory)
+CREATE TABLE rate_events (
+  id         SERIAL PRIMARY KEY,
+  bucket     VARCHAR(20) NOT NULL,
+  key        VARCHAR(300) NOT NULL,
+  created_at TIMESTAMP NOT NULL
 );
 
 -- Clicks analytics table
@@ -359,6 +411,15 @@ git push origin main
   manually, at most 3) and refuses loopback, private, link-local and other non-public addresses
   (SSRF guard), uses a 4 s timeout and reads at most 512 KB of HTML; failures never block shortening
 - Bulk CSV export neutralises spreadsheet formulas (cells starting with `=`, `+`, `-`, `@`)
+- Passwords (account and link) are hashed with **bcrypt**; login and link-unlock attempts are
+  rate-limited in the database; unknown emails cost the same bcrypt time as wrong passwords
+- **CSRF**: the session cookie is `SameSite=Lax` and httpOnly, and every POST/PUT/PATCH/DELETE that
+  carries it must send an `Origin` (or `Referer`) from `ALLOWED_ORIGINS`/`BASE_URL`, otherwise 403.
+  Requests without the cookie (anonymous API use) are unaffected
+- `JWT_SECRET` lives only in Vercel environment variables; without it on Vercel, accounts are
+  disabled (503) rather than falling back to an insecure key
+- The password page sends `Content-Security-Policy: default-src 'none'`, `frame-ancestors 'none'`
+  and `Referrer-Policy: same-origin`, so the destination never learns the short link page
 - `.env` is gitignored — never commit real secrets
 
 ---
@@ -412,8 +473,21 @@ Deploying the frontend does not provision a database or migrate backend data.
 
 ```bash
 cd backend
-VERCEL=1 DATABASE_URL=sqlite:////tmp/snaplink.db ../.venv/bin/uvicorn app.main:app --port 8000
+VERCEL=1 COOKIE_SECURE=0 DATABASE_URL=sqlite:////tmp/snaplink.db ../.venv/bin/uvicorn app.main:app --port 8000
 # in another shell
 cd frontend && python3 -m http.server 5500
 # open http://127.0.0.1:5500/?api=http://127.0.0.1:8000
 ```
+
+### Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+The suite (`backend/tests/`) covers sign-up/login/logout, login rate limiting, tampered sessions,
+the CSRF origin check, link ownership (dashboard isolation, edit expiry, delete), and protected
+links (password page, wrong/right password, rate limiting, owner-only stats). It runs on SQLite with
+network calls stubbed, and in GitHub Actions on every PR that touches `backend/`.

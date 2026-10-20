@@ -8,6 +8,10 @@
  * - Link preview card (title / image / description fetched by the backend)
  * - Analytics for any short code (GET /analytics/{code}): countries,
  *   devices, browsers, OS and referrers
+ * - Accounts (POST /auth/signup|login|logout, GET /auth/me) with an httpOnly
+ *   session cookie, "My links" dashboard (GET /me/links), edit expiry
+ *   (PATCH /links/{code}) and delete (DELETE /links/{code})
+ * - Optional link password (visitors get a password page before redirecting)
  * - Backend status pill (GET /health)
  */
 
@@ -79,6 +83,10 @@
   const BULK_MAX = 20;
 
   const qrDialog = $("qr-dialog");
+  const linkPassword = $("link-password");
+  const passwordError = $("password-error");
+
+  let currentUser = null;
 
   const recentList = $("recent-list");
   const recentTpl = $("recent-item-tpl");
@@ -225,9 +233,12 @@
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const slow = onSlow ? setTimeout(onSlow, SLOW_NOTICE_MS) : null;
     try {
-      const res = await fetch(`${API_BASE}${path}`, { ...options, signal: controller.signal });
+      // credentials: the session lives in an httpOnly cookie set by the API
+      const res = await fetch(`${API_BASE}${path}`, { credentials: "include", ...options, signal: controller.signal });
       let data = null;
-      try { data = await res.json(); } catch { /* non-JSON body */ }
+      if (res.status !== 204) {
+        try { data = await res.json(); } catch { /* non-JSON body */ }
+      }
       if (!res.ok) throw new ApiError(errorMessage(data, res.status), res.status);
       return data;
     } catch (err) {
@@ -378,6 +389,7 @@
       setFieldError(urlInput, urlError, error);
     }
   });
+  linkPassword.addEventListener("input", () => setFieldError(linkPassword, passwordError, ""));
   aliasInput.addEventListener("input", () => {
     setFieldError(aliasInput, aliasError, validateAlias(aliasInput.value.trim()));
   });
@@ -397,11 +409,16 @@
 
     if (error) { urlInput.focus(); return; }
     if (aliasProblem) { advanced.open = true; aliasInput.focus(); return; }
+    const pw = linkPassword.value;
+    const pwProblem = pw && pw.length < 4 ? "Use at least 4 characters." : "";
+    setFieldError(linkPassword, passwordError, pwProblem);
+    if (pwProblem) { advanced.open = true; linkPassword.focus(); return; }
 
     urlInput.value = url;
     const body = { url };
     if (alias) body.custom_code = alias;
     if (expirySelect.value) body.expires_in_days = Number(expirySelect.value);
+    if (pw) body.password = pw;
 
     setLoading(shortenBtn, true, "Shortening…");
     try {
@@ -418,6 +435,8 @@
       saveRecentAndRender(data);
       urlInput.value = "";
       aliasInput.value = "";
+      linkPassword.value = "";
+      if (currentUser) loadDashboard();
     } catch (err) {
       if (err.status === 409) {
         advanced.open = true;
@@ -444,6 +463,8 @@
     createdEl.textContent = formatDate(data.created_at);
     expiresEl.textContent = data.expires_at ? `${formatDate(data.expires_at)} (${relativeTime(data.expires_at)})` : "Never";
     renderPreview(resultPreview, data);
+    $("result-lock").hidden = !data.password_protected;
+    $("result-owned").hidden = !(data.owned && currentUser);
     drawQR(resultQr, data.short_url, 148);
     resultQr.setAttribute("aria-label", `QR code for ${prettyUrl(data.short_url)}`);
     resetCopyBtn();
@@ -535,6 +556,7 @@
       for (const r of [...data.results].reverse()) if (r.ok) saveRecent(r.link);
       renderRecent();
       renderBulk(data);
+      if (currentUser) loadDashboard();
       if (data.failed === 0) bulkInput.value = "";
       else bulkInput.value = data.results.filter((r) => !r.ok).map((r) => r.input).join("\n");
       updateBulkCount();
@@ -657,6 +679,7 @@
       created_at: data.created_at,
       expires_at: data.expires_at || null,
       title: data.title || null,
+      password_protected: !!data.password_protected,
     });
     storeRecent(items);
   }
@@ -774,7 +797,9 @@
       analyticsResults.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       analyticsResults.hidden = true;
-      const msg = err.status === 404 ? `No link found for "${code}". Check the code and try again.` : err.message;
+      const msg = err.status === 404 ? `No link found for "${code}". Check the code and try again.`
+        : err.status === 403 ? "This link is password-protected. Log in as its owner to see its stats."
+        : err.message;
       setFieldError(analyticsInput, analyticsError, msg);
       document.getElementById("analytics").scrollIntoView({ behavior: "smooth", block: "start" });
     } finally {
@@ -956,6 +981,204 @@
   }
 
   // ──────────────────────────────────────────────
+  // Accounts
+  // ──────────────────────────────────────────────
+  const authDialog = $("auth-dialog");
+  const authForm = $("auth-form");
+  const authEmail = $("auth-email");
+  const authPassword = $("auth-password");
+  const authError = $("auth-error");
+  const authSubmit = $("auth-submit");
+  let authMode = "login";
+
+  function setAuthMode(mode) {
+    authMode = mode;
+    const signup = mode === "signup";
+    $("auth-title").textContent = signup ? "Create your account" : "Log in";
+    authSubmit.querySelector(".btn-label").textContent = signup ? "Create account" : "Log in";
+    authPassword.autocomplete = signup ? "new-password" : "current-password";
+    $("auth-help").hidden = !signup;
+    authForm.querySelectorAll(".auth-tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.mode === mode)));
+    authError.textContent = "";
+  }
+
+  function openAuth(mode = "login") {
+    setAuthMode(mode);
+    authPassword.value = "";
+    if (typeof authDialog.showModal === "function") authDialog.showModal(); else authDialog.setAttribute("open", "");
+    authEmail.focus();
+  }
+  function closeAuth() {
+    if (typeof authDialog.close === "function") authDialog.close(); else authDialog.removeAttribute("open");
+  }
+
+  $("login-open").addEventListener("click", () => openAuth("login"));
+  $("auth-close").addEventListener("click", closeAuth);
+  authDialog.addEventListener("click", (e) => { if (e.target === authDialog) closeAuth(); });
+  authForm.querySelectorAll(".auth-tab").forEach((t) => t.addEventListener("click", () => setAuthMode(t.dataset.mode)));
+  document.querySelectorAll("[data-auth]").forEach((b) => b.addEventListener("click", () => openAuth(b.dataset.auth)));
+
+  authForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { authError.textContent = "Enter a valid email address."; authEmail.focus(); return; }
+    if (authMode === "signup" && password.length < 8) { authError.textContent = "Use at least 8 characters for your password."; authPassword.focus(); return; }
+    if (!password) { authError.textContent = "Enter your password."; authPassword.focus(); return; }
+    authError.textContent = "";
+    setLoading(authSubmit, true);
+    try {
+      const user = await api(`/auth/${authMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      authPassword.value = "";
+      closeAuth();
+      setUser(user);
+      toast(authMode === "signup" ? "Account created. You're logged in." : "Welcome back!");
+    } catch (err) {
+      authError.textContent = err.message;
+    } finally {
+      setLoading(authSubmit, false);
+    }
+  });
+
+  $("logout-btn").addEventListener("click", async () => {
+    try { await api("/auth/logout", { method: "POST" }); } catch { /* cookie may already be gone */ }
+    setUser(null);
+    toast("Logged out");
+  });
+
+  function setUser(user) {
+    currentUser = user;
+    $("login-open").hidden = !!user;
+    $("account-user").hidden = !user;
+    $("account-email").textContent = user ? user.email : "";
+    $("account-email").title = user ? user.email : "";
+    $("dash-cta").hidden = !!user;
+    $("dash-body").hidden = !user;
+    if (user) loadDashboard();
+    else $("dash-list").replaceChildren();
+  }
+
+  async function loadUser() {
+    try { setUser(await api("/auth/me")); } catch { setUser(null); }
+  }
+
+  // ──────────────────────────────────────────────
+  // Dashboard: the account's links
+  // ──────────────────────────────────────────────
+  const dashList = $("dash-list");
+  const dashTpl = $("dash-item-tpl");
+  let dashLinks = [];
+  let dashSearchTimer;
+
+  async function loadDashboard() {
+    const q = $("dash-search").value.trim();
+    try {
+      const data = await api(`/me/links?q=${encodeURIComponent(q)}`);
+      dashLinks = data.links;
+      renderDashboard(data, q);
+    } catch (err) {
+      if (err.status === 401) { setUser(null); return; }
+      toast(err.message);
+    }
+  }
+
+  $("dash-search").addEventListener("input", () => {
+    clearTimeout(dashSearchTimer);
+    dashSearchTimer = setTimeout(loadDashboard, 250);
+  });
+
+  function renderDashboard(data, q) {
+    $("dash-count").textContent = `${data.total} link${data.total === 1 ? "" : "s"}${q ? " found" : ""}`;
+    $("dash-empty-title").textContent = q ? "No matches" : "No links yet";
+    $("dash-empty-text").textContent = q ? "Try a different search." : "Shorten a link while logged in and it shows up here.";
+    dashList.replaceChildren(...data.links.map((link) => {
+      const li = dashTpl.content.firstElementChild.cloneNode(true);
+      li.dataset.code = link.short_code;
+      const a = li.querySelector(".recent-short");
+      a.href = link.short_url;
+      a.textContent = prettyUrl(link.short_url);
+      li.querySelector(".dash-lock").hidden = !link.password_protected;
+      li.querySelector(".dash-expired").hidden = !link.expired;
+      const orig = li.querySelector(".recent-original");
+      orig.textContent = link.title ? `${link.title} · ${prettyUrl(link.original_url)}` : link.original_url;
+      orig.title = link.original_url;
+      li.querySelector(".dash-meta").textContent = `Created ${formatDate(link.created_at, false)} · ${
+        link.expires_at ? `${link.expired ? "Expired" : "Expires"} ${formatDate(link.expires_at, false)}` : "Never expires"}`;
+      li.querySelector(".dash-clicks strong").textContent = link.total_clicks.toLocaleString();
+      li.querySelector(".dash-clicks span").textContent = link.total_clicks === 1 ? "click" : "clicks";
+      const sel = li.querySelector("select");
+      sel.id = `exp-${link.short_code}`;
+      li.querySelector(".dash-expiry label").htmlFor = sel.id;
+      const keep = sel.querySelector('option[value="keep"]');
+      keep.textContent = link.expires_at ? `${link.expired ? "Expired" : "Expires"} ${formatDate(link.expires_at, false)}` : "Never expires";
+      sel.value = link.expires_at ? "keep" : "";
+      if (!link.expires_at) keep.remove();
+      return li;
+    }));
+  }
+
+  dashList.addEventListener("change", async (e) => {
+    const sel = e.target.closest("select");
+    if (!sel) return;
+    const code = sel.closest(".dash-item").dataset.code;
+    const days = sel.value === "" ? null : Number(sel.value);
+    sel.disabled = true;
+    try {
+      await api(`/links/${encodeURIComponent(code)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expires_in_days: days }),
+      });
+      toast(days ? `Expiry set to ${days} day${days === 1 ? "" : "s"} from now` : "Expiry removed");
+      await loadDashboard();
+      syncRecentExpiry(code);
+    } catch (err) {
+      toast(err.message);
+      sel.disabled = false;
+    }
+  });
+
+  dashList.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const code = btn.closest(".dash-item").dataset.code;
+    const link = dashLinks.find((l) => l.short_code === code);
+    if (!link) return;
+    const action = btn.dataset.action;
+    if (action === "copy") {
+      const ok = await copyText(link.short_url);
+      toast(ok ? "Link copied to clipboard" : "Couldn't copy the link");
+    } else if (action === "qr") {
+      openQrDialog(link);
+    } else if (action === "stats") {
+      showAnalyticsFor(code);
+    } else if (action === "delete") {
+      if (!confirm(`Delete ${prettyUrl(link.short_url)}? The short link stops working and its stats are deleted. This can't be undone.`)) return;
+      try {
+        await api(`/links/${encodeURIComponent(code)}`, { method: "DELETE" });
+        storeRecent(loadRecent().filter((i) => i.short_code !== code));
+        renderRecent();
+        toast("Link deleted");
+        await loadDashboard();
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+  });
+
+  /** Keep the browser-only "recent" list in sync after an expiry edit. */
+  function syncRecentExpiry(code) {
+    const fresh = dashLinks.find((l) => l.short_code === code);
+    if (!fresh) return;
+    storeRecent(loadRecent().map((i) => (i.short_code === code ? { ...i, expires_at: fresh.expires_at } : i)));
+    renderRecent();
+  }
+
+  // ──────────────────────────────────────────────
   // Backend status
   // ──────────────────────────────────────────────
   async function checkHealth() {
@@ -981,4 +1204,5 @@
   renderRecent();
   updateBulkCount();
   checkHealth();
+  loadUser();
 })();

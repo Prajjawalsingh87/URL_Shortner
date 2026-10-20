@@ -4,25 +4,32 @@ routes.py - All API route definitions for the URL shortener.
 Endpoints:
   POST /shorten            - Create a shortened URL
   POST /shorten/bulk       - Shorten up to 20 URLs at once
-  GET  /{short_code}       - Redirect to original URL
+  GET  /{short_code}       - Redirect to original URL (password page if protected)
+  POST /{short_code}       - Unlock a password-protected link
   GET  /preview/{short_code} - Preview destination without redirect
   GET  /analytics/{short_code} - Get click analytics
   GET  /health             - Health check
 """
 
 import os
+import html
 import asyncio
 import logging
+from urllib.parse import parse_qs
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import URL, Click
+from .models import URL, Click, User
+from .auth import (
+    get_current_user, hash_password, verify_password, client_ip,
+    is_rate_limited, record_event,
+)
 from .schemas import (
     ShortenRequest, ShortenResponse, PreviewResponse,
     AnalyticsResponse, HealthResponse, DailyClicks, ClickRecord,
@@ -47,6 +54,8 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 # ──────────────────────────────────────────────
 def _to_response(db_url: URL) -> ShortenResponse:
     return ShortenResponse(
+        password_protected=db_url.is_protected,
+        owned=db_url.owner_id is not None,
         short_url=f"{BASE_URL}/{db_url.short_code}",
         short_code=db_url.short_code,
         original_url=db_url.original_url,
@@ -87,8 +96,11 @@ async def _store_url(
     custom_code: Optional[str],
     expires_in_days: Optional[int],
     preview: dict,
+    owner: Optional[User] = None,
+    password: Optional[str] = None,
 ) -> ShortenResponse:
     """Persist a checked URL (or reuse an existing link for it) and return the response."""
+    owner_id = owner.id if owner else None
     if custom_code:
         existing = db.query(URL).filter(URL.short_code == custom_code).first()
         if existing:
@@ -103,8 +115,13 @@ async def _store_url(
         short_code = generate_short_code(url)
         is_custom = False
 
-        # Same original_url already shortened? Return that link instead of a duplicate
-        existing = db.query(URL).filter(URL.original_url == url).first()
+        # Same original_url already shortened by the same owner (or anonymously, for
+        # anonymous requests) and not password-protected? Reuse it instead of a duplicate.
+        existing = None if password else db.query(URL).filter(
+            URL.original_url == url,
+            URL.owner_id.is_(None) if owner_id is None else URL.owner_id == owner_id,
+            URL.password_hash.is_(None),
+        ).first()
         if existing and existing.is_active and not is_expired(existing.expires_at):
             # Backfill the preview for links created before previews existed
             if preview and not (existing.title or existing.image_url):
@@ -129,13 +146,16 @@ async def _store_url(
         title=preview.get("title"),
         description=preview.get("description"),
         image_url=preview.get("image_url"),
+        owner_id=owner_id,
+        password_hash=hash_password(password) if password else None,
     )
     db.add(db_url)
     db.commit()
     db.refresh(db_url)
 
-    # Pre-warm Redis cache
-    await set_cached_url(short_code, url)
+    # Pre-warm Redis cache (never for protected links: the cache path skips the password check)
+    if not db_url.is_protected:
+        await set_cached_url(short_code, url)
     logger.info(f"Created short URL: {BASE_URL}/{short_code} -> {url}")
     return _to_response(db_url)
 
@@ -144,14 +164,19 @@ async def _store_url(
 # POST /shorten
 # ──────────────────────────────────────────────
 @router.post("/shorten", response_model=ShortenResponse, status_code=201)
-async def shorten_url(payload: ShortenRequest, db: Session = Depends(get_db)):
+async def shorten_url(
+    payload: ShortenRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """
     Accept a long URL, validate it, generate a Base62 short code,
     store it with a link preview, and return the shortened URL.
     """
     url = payload.url.strip()
     preview = await _check_url(url)
-    return await _store_url(db, url, payload.custom_code, payload.expires_in_days, preview)
+    return await _store_url(db, url, payload.custom_code, payload.expires_in_days, preview,
+                            owner=user, password=payload.password)
 
 
 # ──────────────────────────────────────────────
@@ -161,7 +186,11 @@ BULK_CONCURRENCY = 10
 
 
 @router.post("/shorten/bulk", response_model=BulkShortenResponse)
-async def shorten_bulk(payload: BulkShortenRequest, db: Session = Depends(get_db)):
+async def shorten_bulk(
+    payload: BulkShortenRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """
     Shorten up to 20 URLs in one request. Each line succeeds or fails on its own;
     URLs are checked concurrently (at most 10 at a time) and stored in input order.
@@ -184,7 +213,7 @@ async def shorten_bulk(payload: BulkShortenRequest, db: Session = Depends(get_db
             results.append(BulkItem(input=raw, ok=False, error=error))
             continue
         try:
-            link = await _store_url(db, url, None, payload.expires_in_days, preview or {})
+            link = await _store_url(db, url, None, payload.expires_in_days, preview or {}, owner=user)
             results.append(BulkItem(input=raw, ok=True, link=link))
         except HTTPException as e:
             db.rollback()
@@ -229,7 +258,11 @@ async def health_check(db: Session = Depends(get_db)):
 # GET /preview/{short_code}
 # ──────────────────────────────────────────────
 @router.get("/preview/{short_code}", response_model=PreviewResponse)
-async def preview_url(short_code: str, db: Session = Depends(get_db)):
+async def preview_url(
+    short_code: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """
     Show the destination URL and basic stats without performing a redirect.
     Useful for users to verify before visiting.
@@ -250,6 +283,7 @@ async def preview_url(short_code: str, db: Session = Depends(get_db)):
             status_code=status.HTTP_410_GONE,
             detail="This shortened URL has expired."
         )
+    _hide_protected(db_url, user)
 
     total_clicks = db.query(Click).filter(Click.short_code == short_code).count()
 
@@ -269,7 +303,11 @@ async def preview_url(short_code: str, db: Session = Depends(get_db)):
 # GET /analytics/{short_code}
 # ──────────────────────────────────────────────
 @router.get("/analytics/{short_code}", response_model=AnalyticsResponse)
-async def get_analytics(short_code: str, db: Session = Depends(get_db)):
+async def get_analytics(
+    short_code: str,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """
     Return detailed click analytics for a short code.
     Includes total clicks, daily breakdown, top IPs, and user agents.
@@ -281,6 +319,7 @@ async def get_analytics(short_code: str, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Short code '{short_code}' not found."
         )
+    _hide_protected(db_url, user)
 
     # Fetch all clicks
     clicks = db.query(Click).filter(Click.short_code == short_code).order_by(Click.timestamp, Click.id).all()
@@ -365,6 +404,52 @@ async def get_analytics(short_code: str, db: Session = Depends(get_db)):
     )
 
 
+def _hide_protected(db_url: URL, user: Optional[User]) -> None:
+    """A protected link's destination and stats are visible to its owner only."""
+    if db_url.is_protected and (user is None or db_url.owner_id != user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This link is password-protected. Only its owner can see its details.",
+        )
+
+
+def _record_click(db: Session, short_code: str, request: Request, referrer: Optional[str]) -> None:
+    user_agent = request.headers.get("User-Agent", "unknown")
+    device, browser, os_name = parse_user_agent(user_agent)
+    # Vercel's edge adds x-vercel-ip-country (ISO code). Elsewhere (local dev,
+    # Docker) it is absent and country stays blank: no paid geo-IP lookups.
+    country = (request.headers.get("x-vercel-ip-country") or "").strip().upper()[:8] or None
+    db.add(Click(
+        short_code=short_code,
+        ip_address=client_ip(request),
+        user_agent=user_agent,
+        country=country,
+        device=device,
+        browser=browser,
+        os=os_name,
+        referrer=referrer,
+    ))
+    db.commit()
+
+
+RESERVED = {"docs", "redoc", "openapi.json", "health", "shorten", "preview", "analytics",
+            "favicon.ico", "auth", "me", "links"}
+
+
+def _active_link(db: Session, short_code: str) -> URL:
+    if short_code in RESERVED:
+        raise HTTPException(status_code=404, detail="Not found")
+    db_url = db.query(URL).filter(URL.short_code == short_code, URL.is_active == True).first()
+    if not db_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Short code '{short_code}' not found or has been deactivated."
+        )
+    if is_expired(db_url.expires_at):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shortened URL has expired.")
+    return db_url
+
+
 # ──────────────────────────────────────────────
 # GET /{short_code} — Redirect (DYNAMIC ROUTE AT END)
 # ──────────────────────────────────────────────
@@ -372,66 +457,101 @@ async def get_analytics(short_code: str, db: Session = Depends(get_db)):
 async def redirect_to_url(short_code: str, request: Request, db: Session = Depends(get_db)):
     """
     Redirect short code to the original URL.
-    Checks Redis cache first; falls back to PostgreSQL.
+    Checks Redis cache first (unprotected links only); falls back to the database.
+    Password-protected links get a small password page instead.
     Records click analytics.
     """
-    # Reserved routes — don't treat as short codes
-    reserved = {"docs", "redoc", "openapi.json", "health", "shorten", "preview", "analytics", "favicon.ico"}
-    if short_code in reserved:
+    if short_code in RESERVED:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # 1. Check Redis cache first
     original_url = await get_cached_url(short_code)
-
-    # 2. Cache miss — query PostgreSQL
     if not original_url:
-        db_url = db.query(URL).filter(
-            URL.short_code == short_code,
-            URL.is_active == True
-        ).first()
-
-        if not db_url:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Short code '{short_code}' not found or has been deactivated."
-            )
-
-        # Check expiry
-        if is_expired(db_url.expires_at):
-            raise HTTPException(
-                status_code=status.HTTP_410_GONE,
-                detail="This shortened URL has expired."
-            )
-
+        db_url = _active_link(db, short_code)
+        if db_url.is_protected:
+            return password_page(short_code, ref=referrer_host(request.headers.get("Referer")) or "")
         original_url = db_url.original_url
-        # Cache for future requests
         await set_cached_url(short_code, original_url)
 
-    # 3. Record click analytics (async, non-blocking)
-    client_ip = request.client.host if request.client else "unknown"
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-
-    user_agent = request.headers.get("User-Agent", "unknown")
-    device, browser, os_name = parse_user_agent(user_agent)
-
-    # Vercel's edge adds x-vercel-ip-country (ISO code). Elsewhere (local dev,
-    # Docker) it is absent and country stays blank: no paid geo-IP lookups.
-    country = (request.headers.get("x-vercel-ip-country") or "").strip().upper()[:8] or None
-
-    click = Click(
-        short_code=short_code,
-        ip_address=client_ip[:45],
-        user_agent=user_agent,
-        country=country,
-        device=device,
-        browser=browser,
-        os=os_name,
-        referrer=referrer_host(request.headers.get("Referer")),
-    )
-    db.add(click)
-    db.commit()
-
-    # 4. Redirect with 302 (temporary redirect; use 301 for permanent)
+    _record_click(db, short_code, request, referrer_host(request.headers.get("Referer")))
+    # 302 (temporary) so browsers re-check and every click is counted
     return RedirectResponse(url=original_url, status_code=302)
+
+
+# ──────────────────────────────────────────────
+# POST /{short_code} — Unlock a password-protected link
+# ──────────────────────────────────────────────
+MAX_FORM_BYTES = 4096
+
+
+@router.post("/{short_code}")
+async def unlock_url(short_code: str, request: Request, db: Session = Depends(get_db)):
+    """Check the password from the password page; on success record the click and redirect."""
+    db_url = _active_link(db, short_code)
+    if not db_url.is_protected:
+        return RedirectResponse(url=db_url.original_url, status_code=303)
+
+    body = await request.body()
+    if len(body) > MAX_FORM_BYTES:
+        raise HTTPException(status_code=413, detail="Request too large.")
+    form = parse_qs(body.decode("utf-8", errors="replace"), max_num_fields=5)
+    password = (form.get("password") or [""])[0]
+    ref = ((form.get("ref") or [""])[0])[:255]
+
+    key = f"{short_code}:{client_ip(request)}"
+    if is_rate_limited(db, "unlock", key):
+        return password_page(short_code, ref=ref, error="Too many wrong attempts. Try again in 15 minutes.",
+                             status_code=429)
+    if not password or not verify_password(password, db_url.password_hash):
+        record_event(db, "unlock", key)
+        return password_page(short_code, ref=ref, error="Wrong password. Try again.", status_code=401)
+
+    _record_click(db, short_code, request, referrer_host(f"https://{ref}") if ref else None)
+    return RedirectResponse(url=db_url.original_url, status_code=303)
+
+
+def password_page(code: str, ref: str = "", error: str = "", status_code: int = 200) -> HTMLResponse:
+    """Small self-contained page asking for the link password (no scripts, no external assets)."""
+    e = html.escape
+    error_html = f'<p class="err" role="alert">{e(error)}</p>' if error else ""
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Protected link · SnapLink</title>
+<style>
+:root{{color-scheme:light dark;--bg:#f6f7fb;--card:#fff;--text:#0f1222;--muted:#5f6680;--border:#c9cfdc;--primary:#4f46e5;--on:#fff;--danger:#c02634}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0b0d14;--card:#141826;--text:#eef0f7;--muted:#9198b0;--border:#363e56;--primary:#7c78ff;--on:#0b0d14;--danger:#ff7b86}}}}
+*{{box-sizing:border-box;margin:0}}
+body{{min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}}
+main{{width:100%;max-width:380px;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px 24px;box-shadow:0 20px 40px -16px rgba(0,0,0,.25)}}
+.brand{{font-weight:800;letter-spacing:-.02em;color:var(--primary);margin-bottom:16px}}
+h1{{font-size:20px;letter-spacing:-.01em}}
+p.sub{{color:var(--muted);font-size:14px;margin:6px 0 18px}}
+code{{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace}}
+label{{display:block;font-size:14px;font-weight:600;margin-bottom:6px}}
+input{{width:100%;height:46px;padding:0 14px;border:1px solid var(--border);border-radius:12px;background:transparent;color:inherit;font:inherit}}
+input:focus{{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 35%,transparent)}}
+button{{margin-top:14px;width:100%;height:46px;border:0;border-radius:12px;background:var(--primary);color:var(--on);font:600 15px system-ui,sans-serif;cursor:pointer}}
+.err{{color:var(--danger);font-size:14px;font-weight:500;margin-top:10px}}
+</style></head>
+<body><main>
+<p class="brand">SnapLink</p>
+<h1>This link is password-protected</h1>
+<p class="sub">Enter the password to continue to <code>/{e(code)}</code>.</p>
+<form method="post" autocomplete="off">
+<label for="pw">Password</label>
+<input id="pw" name="password" type="password" required autofocus maxlength="200">
+<input type="hidden" name="ref" value="{e(ref)}">
+{error_html}
+<button type="submit">Continue</button>
+</form>
+</main></body></html>"""
+    return HTMLResponse(page, status_code=status_code, headers={
+        "Cache-Control": "no-store",
+        # No form-action directive: browsers apply it to the post-submit redirect too,
+        # which would block the hop to the (external) destination.
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+        "X-Frame-Options": "DENY",
+        # same-origin (not no-referrer): the form POST must carry a real Origin for the
+        # CSRF check, while the destination still receives no Referer
+        "Referrer-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+    })

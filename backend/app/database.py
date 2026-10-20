@@ -48,6 +48,8 @@ ADDED_COLUMNS = {
         "title": "TEXT",
         "description": "TEXT",
         "image_url": "TEXT",
+        "owner_id": "INTEGER",        # FK to users.id on fresh databases
+        "password_hash": "TEXT",
     },
     "clicks": {
         "country": "VARCHAR(8)",
@@ -65,6 +67,7 @@ def _add_missing_columns():
             for table, cols in ADDED_COLUMNS.items():
                 for name, ddl in cols.items():
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {ddl}"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_urls_owner_id ON urls (owner_id)"))
         else:
             # SQLite (local dev) has no ADD COLUMN IF NOT EXISTS: check first.
             for table, cols in ADDED_COLUMNS.items():
@@ -72,6 +75,7 @@ def _add_missing_columns():
                 for name, ddl in cols.items():
                     if name not in existing:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_urls_owner_id ON urls (owner_id)"))
 
 
 def ensure_tables():
