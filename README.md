@@ -95,6 +95,7 @@ cp .env.example .env
 | `JWT_SECRET`        | Signs session cookies. **Required** on Vercel (set per environment with `vercel env add JWT_SECRET production` / `preview`); random per process in local dev | *(required in prod)* |
 | `COOKIE_SECURE`     | `0` only for plain-http local dev    | `1`                            |
 | `BCRYPT_ROUNDS`     | bcrypt cost factor                   | `12`                           |
+| `TRUST_PROXY`       | Use `X-Forwarded-For` for the client IP (rate limits, analytics). Only enable behind a proxy that sets it | `1` on Vercel, else `0` |
 
 ---
 
@@ -198,7 +199,7 @@ Sessions are a signed JWT in an **httpOnly, Secure, SameSite=Lax** cookie (`snap
 | Method | Path | Notes |
 |--------|------|-------|
 | `POST` | `/auth/signup` | `{"email", "password"}` (8–72 bytes). 409 if the email exists. Logs you in. |
-| `POST` | `/auth/login` | 401 on a wrong email/password; 429 after 5 failures per email or 20 per IP in 15 min |
+| `POST` | `/auth/login` | 401 on a wrong email/password; 429 after 5 failures for an email from one IP, 50 for an email from all IPs, or 20 from one IP, per 15 min (a stranger can't lock you out from elsewhere) |
 | `POST` | `/auth/logout` | Clears the cookie |
 | `GET` | `/auth/me` | The current user, or 401 |
 | `GET` | `/me/links?q=` | Your links with `total_clicks`, `expires_at`, `expired`, `password_protected`; `q` searches URL, title and code |
@@ -220,7 +221,8 @@ curl -L http://localhost:8000/aB3kX9z
 
 For a **password-protected** link this returns a small password page instead (no scripts,
 strict CSP, `no-store`); the page POSTs to `/{short_code}`, which answers `401` with the page again
-on a wrong password, `429` after 5 wrong tries per link and IP in 15 minutes, and `303` to the
+on a wrong password, `429` after 5 wrong tries per link and IP (or 50 per link from all IPs) in
+15 minutes, and `303` to the
 destination on success (the click is recorded then). `/preview` and `/analytics` return `403` for
 protected links unless you are the owner.
 

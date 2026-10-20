@@ -498,11 +498,12 @@ async def unlock_url(short_code: str, request: Request, db: Session = Depends(ge
     ref = ((form.get("ref") or [""])[0])[:255]
 
     key = f"{short_code}:{client_ip(request)}"
-    if is_rate_limited(db, "unlock", key):
+    if is_rate_limited(db, "unlock", key) or is_rate_limited(db, "unlock-link", short_code):
         return password_page(short_code, ref=ref, error="Too many wrong attempts. Try again in 15 minutes.",
                              status_code=429)
     if not password or not verify_password(password, db_url.password_hash):
         record_event(db, "unlock", key)
+        record_event(db, "unlock-link", short_code)
         return password_page(short_code, ref=ref, error="Wrong password. Try again.", status_code=401)
 
     _record_click(db, short_code, request, referrer_host(f"https://{ref}") if ref else None)

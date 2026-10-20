@@ -45,6 +45,16 @@ def test_wrong_passwords_are_rate_limited(user_client):
         assert someone_else.post(f"/{code}", data={"password": "open sesame"}).status_code == 303
 
 
+def test_unlock_has_a_per_link_ceiling_across_ips(user_client):
+    code = make_protected(user_client)
+    for _ in range(10):                      # 10 IPs x 5 wrong guesses = 50 per link
+        with new_client() as attacker:
+            for _ in range(5):
+                attacker.post(f"/{code}", data={"password": "guess"})
+    with new_client() as visitor:
+        assert visitor.post(f"/{code}", data={"password": "open sesame"}).status_code == 429
+
+
 def test_protected_details_are_owner_only(user_client):
     code = make_protected(user_client)
     with new_client() as anon:

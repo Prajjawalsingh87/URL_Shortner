@@ -22,6 +22,7 @@ Endpoints:
 
 import os
 import re
+import hashlib
 import secrets
 import logging
 from datetime import datetime, timedelta
@@ -70,15 +71,22 @@ def _jwt_secret() -> str:
     return _JWT_SECRET
 
 
+# One origin list for both CORS (main.py) and the CSRF check below
+DEFAULT_ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500"
+
+
+def configured_origins() -> list[str]:
+    raw = os.getenv("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+
+
 def allowed_origins() -> set[str]:
-    """Origins allowed to make cookie-authenticated, state-changing requests."""
-    origins = {o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()}
-    base = os.getenv("BASE_URL", "http://localhost:8000")
-    parts = urlsplit(base)
+    """Origins allowed to make cookie-authenticated, state-changing requests:
+    the CORS origins plus the public origin in BASE_URL (the frontend's proxy domain)."""
+    origins = set(configured_origins())
+    parts = urlsplit(os.getenv("BASE_URL", "http://localhost:8000"))
     if parts.scheme and parts.netloc:
         origins.add(f"{parts.scheme}://{parts.netloc}")
-    origins.update({"http://localhost:5500", "http://127.0.0.1:5500", "http://localhost:3000"}
-                   if not COOKIE_SECURE else set())
     return origins
 
 
@@ -126,19 +134,32 @@ def validate_password(value: str, minimum: int = MIN_PASSWORD) -> str:
 # ──────────────────────────────────────────────
 LIMITS = {
     # bucket: (max failures, window)
-    "login-email": (5, timedelta(minutes=15)),
+    # Per email+IP, so a stranger can't lock someone out by failing on purpose...
+    "login-email-ip": (5, timedelta(minutes=15)),
+    # ...plus a much higher per-account ceiling against guessing from many IPs.
+    "login-email": (50, timedelta(minutes=15)),
     "login-ip": (20, timedelta(minutes=15)),
     "signup-ip": (10, timedelta(hours=1)),
     "unlock": (5, timedelta(minutes=15)),          # per short code + IP
+    "unlock-link": (50, timedelta(minutes=15)),    # per short code, across all IPs
 }
+
+# Only trust X-Forwarded-For behind a proxy that sets it. On Vercel the edge
+# overwrites it with the real client IP (clients can't spoof it); elsewhere the
+# default is the socket address unless TRUST_PROXY=1 (e.g. behind nginx).
+TRUST_PROXY = os.getenv("TRUST_PROXY", "1" if os.getenv("VERCEL") else "0") == "1"
 
 
 def client_ip(request: Request) -> str:
-    """Vercel overwrites X-Forwarded-For with the real client IP, so the first hop is trusted."""
-    fwd = request.headers.get("x-forwarded-for")
+    fwd = request.headers.get("x-forwarded-for") if TRUST_PROXY else None
     if fwd:
         return fwd.split(",")[0].strip()[:45]
     return (request.client.host if request.client else "unknown")[:45]
+
+
+def _hashed_key(*parts: str) -> str:
+    """Compound rate-limit key without storing the raw email/IP pair."""
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def is_rate_limited(db: Session, bucket: str, key: str) -> bool:
@@ -325,10 +346,14 @@ async def signup(payload: SignupRequest, request: Request, response: Response, d
 async def login(payload: Credentials, request: Request, response: Response, db: Session = Depends(get_db)):
     _jwt_secret()
     ip = client_ip(request)
-    if is_rate_limited(db, "login-email", payload.email) or is_rate_limited(db, "login-ip", ip):
+    email_ip = _hashed_key(payload.email, ip)
+    if (is_rate_limited(db, "login-email-ip", email_ip)
+            or is_rate_limited(db, "login-email", payload.email)
+            or is_rate_limited(db, "login-ip", ip)):
         raise too_many()
     user = db.query(User).filter(User.email == payload.email).first()
     if not verify_password(payload.password, user.password_hash if user else None):
+        record_event(db, "login-email-ip", email_ip)
         record_event(db, "login-email", payload.email)
         record_event(db, "login-ip", ip)
         raise HTTPException(status_code=401, detail="Wrong email or password.")

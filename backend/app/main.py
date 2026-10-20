@@ -12,7 +12,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .database import ensure_tables
 from .routes import router
-from .auth import router as auth_router, csrf_origin_check
+from .auth import router as auth_router, csrf_origin_check, configured_origins
 from .cache import init_redis, close_redis
 
 # ──────────────────────────────────────────────
@@ -69,10 +69,7 @@ app = FastAPI(
 # Registered before CORS so CORS stays the outermost layer (403s keep CORS headers).
 app.middleware("http")(csrf_origin_check)
 
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500"
-).split(",")
+ALLOWED_ORIGINS = configured_origins()   # shared with the CSRF origin check
 
 app.add_middleware(
     CORSMiddleware,

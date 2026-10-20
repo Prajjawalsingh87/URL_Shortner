@@ -31,15 +31,43 @@ def test_login_logout(client):
     assert client.get("/auth/me").json()["email"] == email
 
 
-def test_login_is_rate_limited_per_email(client):
+def test_login_lockout_is_per_email_and_ip(client):
     email = signup(client, password="s3cret-password")
     client.cookies.clear()
     for _ in range(5):
         assert client.post("/auth/login", json={"email": email, "password": "bad-password"}).status_code == 401
-    # Locked even with the right password, and from another IP
-    with new_client() as other:
-        r = other.post("/auth/login", json={"email": email, "password": "s3cret-password"})
-        assert r.status_code == 429 and "Retry-After" in r.headers
+    # This IP is locked out for this account, even with the right password...
+    r = client.post("/auth/login", json={"email": email, "password": "s3cret-password"})
+    assert r.status_code == 429 and "Retry-After" in r.headers
+    # ...but a stranger failing on purpose can't lock the real user out from elsewhere
+    with new_client() as owner:
+        assert owner.post("/auth/login", json={"email": email, "password": "s3cret-password"}).status_code == 200
+
+
+def test_login_per_account_ceiling_across_ips(client):
+    email = signup(client, password="s3cret-password")
+    for _ in range(10):                      # 10 IPs x 5 failures = the 50 per-account ceiling
+        with new_client() as attacker:
+            for _ in range(5):
+                attacker.post("/auth/login", json={"email": email, "password": "guess-guess"})
+    with new_client() as fresh_ip:
+        assert fresh_ip.post("/auth/login", json={"email": email, "password": "s3cret-password"}).status_code == 429
+
+
+def test_forwarded_for_only_trusted_behind_proxy(monkeypatch):
+    from starlette.requests import Request
+    from app import auth
+    req = Request({"type": "http", "headers": [(b"x-forwarded-for", b"1.2.3.4")], "client": ("10.9.8.7", 1234)})
+    monkeypatch.setattr(auth, "TRUST_PROXY", True)
+    assert auth.client_ip(req) == "1.2.3.4"
+    monkeypatch.setattr(auth, "TRUST_PROXY", False)
+    assert auth.client_ip(req) == "10.9.8.7"
+
+
+def test_csrf_and_cors_share_origins():
+    from app import auth
+    assert set(auth.configured_origins()) <= auth.allowed_origins()
+    assert "http://testserver" in auth.allowed_origins()
 
 
 def test_unknown_email_gets_same_error(client):

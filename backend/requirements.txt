@@ -18,7 +18,7 @@ httpx==0.27.0                   # Async HTTP client for URL reachability check
 
 # ── Accounts ──
 bcrypt==4.2.1                   # Password hashing (user + link passwords)
-PyJWT==2.9.0                    # Signed session tokens (httpOnly cookie)
+PyJWT==2.15.1                   # Signed session tokens (httpOnly cookie)
 
 # ── Validation ──
 pydantic==2.7.1                 # Data validation (FastAPI depends on this)
