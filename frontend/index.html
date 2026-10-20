@@ -39,8 +39,8 @@
 
       <nav class="nav" aria-label="Main">
         <a href="#top" class="nav-link nav-link-home">Shorten</a>
-        <a href="#bulk" class="nav-link">Bulk</a>
-        <a href="#recent" class="nav-link">My links</a>
+        <a href="#bulk" class="nav-link nav-link-hide-sm">Bulk</a>
+        <a href="#dashboard" class="nav-link">My links</a>
         <a href="#analytics" class="nav-link">Analytics</a>
         <a href="#" id="api-docs-link" class="nav-link nav-link-hide-sm" target="_blank" rel="noopener">API</a>
       </nav>
@@ -49,6 +49,14 @@
         <span class="api-dot" aria-hidden="true"></span>
         <span class="api-status-text">Checking…</span>
       </span>
+
+      <div class="account" id="account">
+        <button type="button" class="btn btn-secondary btn-sm" id="login-open">Log in</button>
+        <div class="account-user" id="account-user" hidden>
+          <span class="account-email" id="account-email"></span>
+          <button type="button" class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -89,7 +97,7 @@
             <summary>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
               Advanced options
-              <span class="advanced-hint">custom alias, expiry</span>
+              <span class="advanced-hint">custom alias, password, expiry</span>
             </summary>
             <div class="advanced-grid">
               <div class="field">
@@ -100,6 +108,12 @@
                 </div>
                 <p class="field-help" id="alias-help">3–20 letters or numbers.</p>
                 <p class="field-error" id="alias-error" role="alert"></p>
+              </div>
+              <div class="field">
+                <label for="link-password" class="field-label">Password <span class="optional">optional</span></label>
+                <input type="password" id="link-password" name="password" class="input" placeholder="Visitors must enter it" minlength="4" maxlength="72" autocomplete="new-password" aria-describedby="password-help password-error" />
+                <p class="field-help" id="password-help">At least 4 characters. Visitors see a password page first.</p>
+                <p class="field-error" id="password-error" role="alert"></p>
               </div>
               <div class="field">
                 <label for="expiry-days" class="field-label">Expires after <span class="optional">optional</span></label>
@@ -126,6 +140,12 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>
               <span id="result-title">Your link is ready</span>
             </span>
+            <span class="badge badge-lock" id="result-lock" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+              Password-protected
+            </span>
+            <span class="badge" id="result-owned" hidden>Saved to your account</span>
+            <span class="result-head-spacer"></span>
             <button type="button" class="icon-btn" id="result-close" aria-label="Dismiss result">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
             </button>
@@ -245,6 +265,43 @@
             </div>
           </div>
           <ol class="bulk-list" id="bulk-list"></ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────── Dashboard (account links) ───────── -->
+    <section class="section" id="dashboard" aria-labelledby="dashboard-title">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title" id="dashboard-title">My links</h2>
+            <p class="section-sub" id="dashboard-sub">Every link you create while logged in, from any device.</p>
+          </div>
+        </div>
+
+        <div class="card dash-cta" id="dash-cta">
+          <p class="empty-title">Keep your links in one place</p>
+          <p class="empty-text">Create a free account to see all your links with click counts, change expiry dates, and delete links. Shortening without an account still works.</p>
+          <div class="dash-cta-actions">
+            <button type="button" class="btn btn-primary" data-auth="signup">Create account</button>
+            <button type="button" class="btn btn-secondary" data-auth="login">Log in</button>
+          </div>
+        </div>
+
+        <div id="dash-body" hidden>
+          <div class="history-tools">
+            <label for="dash-search">Search</label>
+            <input id="dash-search" type="search" placeholder="Search by URL, title or short code">
+            <span id="dash-count" role="status"></span>
+          </div>
+          <div class="card list-card">
+            <ul class="dash-list" id="dash-list"></ul>
+            <div class="empty-state" id="dash-empty">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
+              <p class="empty-title" id="dash-empty-title">No links yet</p>
+              <p class="empty-text" id="dash-empty-text">Shorten a link while logged in and it shows up here.</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -401,6 +458,79 @@
       <span class="btn-label">Download PNG</span>
     </button>
   </dialog>
+
+  <dialog class="auth-dialog" id="auth-dialog" aria-labelledby="auth-title">
+    <form id="auth-form" novalidate>
+      <div class="qr-dialog-head">
+        <h2 class="qr-dialog-title" id="auth-title">Log in</h2>
+        <button type="button" class="icon-btn" id="auth-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" role="tab" class="auth-tab" data-mode="login" aria-selected="true">Log in</button>
+        <button type="button" role="tab" class="auth-tab" data-mode="signup" aria-selected="false">Create account</button>
+      </div>
+      <div class="field">
+        <label for="auth-email" class="field-label">Email</label>
+        <input type="email" id="auth-email" class="input" autocomplete="email" required maxlength="254" />
+      </div>
+      <div class="field">
+        <label for="auth-password" class="field-label">Password</label>
+        <input type="password" id="auth-password" class="input" autocomplete="current-password" required minlength="8" maxlength="72" aria-describedby="auth-help" />
+        <p class="field-help" id="auth-help" hidden>At least 8 characters.</p>
+      </div>
+      <p class="field-error" id="auth-error" role="alert"></p>
+      <button type="submit" class="btn btn-primary btn-block" id="auth-submit">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="btn-label">Log in</span>
+      </button>
+    </form>
+  </dialog>
+
+  <template id="dash-item-tpl">
+    <li class="dash-item">
+      <div class="dash-main">
+        <div class="dash-line">
+          <a class="recent-short" target="_blank" rel="noopener"></a>
+          <span class="badge badge-lock dash-lock" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+            Protected
+          </span>
+          <span class="badge badge-danger dash-expired" hidden>Expired</span>
+        </div>
+        <span class="recent-original"></span>
+        <span class="dash-meta"></span>
+      </div>
+      <div class="dash-clicks"><strong></strong><span>clicks</span></div>
+      <div class="dash-expiry">
+        <label class="sr-only">Expiry</label>
+        <select class="input select input-sm">
+          <option value="keep" hidden></option>
+          <option value="">Never expires</option>
+          <option value="1">Expire in 1 day</option>
+          <option value="7">Expire in 7 days</option>
+          <option value="30">Expire in 30 days</option>
+          <option value="90">Expire in 90 days</option>
+          <option value="365">Expire in 1 year</option>
+        </select>
+      </div>
+      <div class="recent-actions">
+        <button type="button" class="icon-btn" data-action="copy" aria-label="Copy link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+        </button>
+        <button type="button" class="icon-btn" data-action="qr" aria-label="Show QR code">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2z"/></svg>
+        </button>
+        <button type="button" class="icon-btn" data-action="stats" aria-label="View stats">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        </button>
+        <button type="button" class="icon-btn icon-btn-danger" data-action="delete" aria-label="Delete link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+        </button>
+      </div>
+    </li>
+  </template>
 
   <template id="recent-item-tpl">
     <li class="recent-item">

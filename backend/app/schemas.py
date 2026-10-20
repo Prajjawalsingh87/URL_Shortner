@@ -12,6 +12,18 @@ class ShortenRequest(BaseModel):
     url: str                                 # The original long URL
     custom_code: Optional[str] = None        # Optional custom short code
     expires_in_days: Optional[int] = None    # Optional expiry in days
+    password: Optional[str] = None           # Optional: visitors must enter it before redirecting
+
+    @field_validator("password")
+    @classmethod
+    def validate_link_password(cls, v):
+        if v is None or v == "":
+            return None
+        if len(v) < 4:
+            raise ValueError("Link password must be at least 4 characters.")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Link password must be at most 72 bytes.")
+        return v
 
     @field_validator("url")
     @classmethod
@@ -43,6 +55,8 @@ class ShortenResponse(BaseModel):
     title: Optional[str] = None              # Link preview: page title
     description: Optional[str] = None        # Link preview: og:description
     image_url: Optional[str] = None          # Link preview: og:image
+    password_protected: bool = False
+    owned: bool = False                      # True when the link belongs to an account
 
     class Config:
         from_attributes = True

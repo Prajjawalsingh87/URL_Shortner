@@ -12,6 +12,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .database import ensure_tables
 from .routes import router
+from .auth import router as auth_router, csrf_origin_check, configured_origins
 from .cache import init_redis, close_redis
 
 # ──────────────────────────────────────────────
@@ -64,10 +65,11 @@ app = FastAPI(
 # CORS Middleware
 # Allow the frontend origin to call backend APIs
 # ──────────────────────────────────────────────
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500"
-).split(",")
+# CSRF: cookie-authenticated unsafe requests must come from an allowed Origin.
+# Registered before CORS so CORS stays the outermost layer (403s keep CORS headers).
+app.middleware("http")(csrf_origin_check)
+
+ALLOWED_ORIGINS = configured_origins()   # shared with the CSRF origin check
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,6 +82,8 @@ app.add_middleware(
 # ──────────────────────────────────────────────
 # Mount Routes
 # ──────────────────────────────────────────────
+# Auth routes first: the catch-all /{short_code} routes live in `router`
+app.include_router(auth_router)
 app.include_router(router)
 
 
