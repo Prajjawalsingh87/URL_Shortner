@@ -184,6 +184,12 @@
           <button type="button" class="btn btn-ghost btn-sm" id="clear-recent" hidden>Clear all</button>
         </div>
 
+        <div class="history-tools">
+          <label for="recent-search">Find a saved link</label>
+          <input id="recent-search" type="search" placeholder="Search by URL or short code">
+          <button type="button" class="btn btn-ghost btn-sm" id="export-recent">Export JSON</button>
+          <span id="recent-count" role="status"></span>
+        </div>
         <div class="card list-card">
           <ul class="recent-list" id="recent-list"></ul>
           <div class="empty-state" id="recent-empty">
