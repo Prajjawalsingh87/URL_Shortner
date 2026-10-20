@@ -2,9 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://url-shortner-xzz7.onrender.com/:path*"
-    }
+    { "source": "/api/:path*", "destination": "https://snaplink-api-six.vercel.app/:path*" },
+    { "source": "/openapi.json", "destination": "https://snaplink-api-six.vercel.app/openapi.json" },
+    { "source": "/:code([A-Za-z0-9_-]{3,20})", "destination": "https://snaplink-api-six.vercel.app/:code" }
   ]
 }

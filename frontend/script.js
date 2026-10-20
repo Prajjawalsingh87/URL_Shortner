@@ -17,7 +17,7 @@
   //   3. localhost / 127.0.0.1  -> same host, port 8000
   //   4. otherwise the production API below
   // ──────────────────────────────────────────────
-  const PROD_API_BASE = "https://url-shortner-xzz7.onrender.com";
+  const PROD_API_BASE = "https://snaplink-api-six.vercel.app";
 
   function resolveApiBase() {
     const fromQuery = new URLSearchParams(location.search).get("api");
