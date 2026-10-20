@@ -18,6 +18,15 @@
 
 SnapLink transforms long URLs into compact, shareable links using **Base62 encoding**. Every redirect is cached in Redis for sub-millisecond lookups, while PostgreSQL stores all analytics data including per-click IP addresses, timestamps, and user agents.
 
+### Features
+
+- **Short links** with optional custom alias and expiry; the destination is checked for reachability first.
+- **QR code for every link**, generated in the browser ([qrcode-generator](https://www.npmjs.com/package/qrcode-generator)) on the result card and from the recent-links list, with **Download PNG** (1024 px).
+- **Link preview**: when a link is created the backend fetches the page's `<title>`, `og:image` and `og:description` and the UI shows a small preview card.
+- **Bulk shorten**: paste up to 20 URLs (one per line) and get a list back with **Copy all** and **Download CSV**. Each line succeeds or fails on its own.
+- **Click analytics**: clicks per day plus top **countries**, **devices**, **browsers**, **operating systems** and **referrers**, and a recent-clicks table.
+- **Recent links** saved in the browser, with search and JSON export.
+
 ## 🌐 Live Demo
 
 - Frontend: https://snaplink-ten-eosin.vercel.app
@@ -145,12 +154,46 @@ curl -X POST http://localhost:8000/shorten \
 
 ---
 
+The response also carries the link preview fields `title`, `description` and `image_url`
+(each `null` when the page has none or could not be fetched).
+
+---
+
+### POST `/shorten/bulk` — Shorten up to 20 URLs
+
+```bash
+curl -X POST http://localhost:8000/shorten/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"urls": ["https://example.com", "python.org", "not a url"], "expires_in_days": 30}'
+```
+
+Blank lines are ignored, a missing scheme becomes `https://`, and more than 20 URLs is a `422`.
+URLs are checked concurrently (10 at a time) and each one reuses the single `/shorten` logic:
+
+```json
+{
+  "total": 3, "succeeded": 2, "failed": 1,
+  "results": [
+    { "input": "https://example.com", "ok": true, "error": null,
+      "link": { "short_url": "https://snaplink-ten-eosin.vercel.app/68g9xMH", "short_code": "68g9xMH", "title": "Example Domain", "...": "..." } },
+    { "input": "python.org", "ok": true, "error": null, "link": { "...": "..." } },
+    { "input": "not a url", "ok": false, "error": "Invalid URL format. Ensure it starts with http:// or https://", "link": null }
+  ]
+}
+```
+
+---
+
 ### GET `/{short_code}` — Redirect
 
 ```bash
 curl -L http://localhost:8000/aB3kX9z
 # → 302 redirect to original URL
 ```
+
+Each redirect records a click with the visitor IP (first `X-Forwarded-For` hop), user agent,
+**country** (from Vercel's `x-vercel-ip-country` header; blank outside Vercel, no paid geo-IP
+lookups), **device** (desktop / mobile / tablet / bot), **browser**, **OS** and **referrer host**.
 
 ---
 
@@ -190,9 +233,18 @@ curl http://localhost:8000/analytics/aB3kX9z
   "clicks_per_day": [
     { "date": "2026-03-11", "count": 42 }
   ],
-  "recent_clicks": [...],
+  "recent_clicks": [
+    { "timestamp": "...", "ip_address": "...", "user_agent": "...",
+      "country": "IN", "device": "mobile", "browser": "Safari", "os": "iOS", "referrer": "twitter.com" }
+  ],
   "top_user_agents": [...],
-  "top_ips": [...]
+  "top_ips": [...],
+  "top_countries": [{ "name": "IN", "count": 30 }, { "name": "US", "count": 12 }],
+  "top_devices":   [{ "name": "mobile", "count": 25 }, { "name": "desktop", "count": 17 }],
+  "top_browsers":  [{ "name": "Chrome", "count": 28 }],
+  "top_os":        [{ "name": "Android", "count": 20 }],
+  "top_referrers": [{ "name": "Direct", "count": 22 }, { "name": "twitter.com", "count": 9 }],
+  "title": "Page title", "description": "...", "image_url": "https://..."
 }
 ```
 
@@ -225,7 +277,10 @@ CREATE TABLE urls (
   custom_code  BOOLEAN DEFAULT FALSE,
   created_at   TIMESTAMP DEFAULT NOW(),
   expires_at   TIMESTAMP,
-  is_active    BOOLEAN DEFAULT TRUE
+  is_active    BOOLEAN DEFAULT TRUE,
+  title        TEXT,          -- link preview
+  description  TEXT,
+  image_url    TEXT
 );
 
 -- Clicks analytics table
@@ -234,9 +289,19 @@ CREATE TABLE clicks (
   short_code  VARCHAR(20) REFERENCES urls(short_code) ON DELETE CASCADE,
   timestamp   TIMESTAMP DEFAULT NOW(),
   ip_address  VARCHAR(45),
-  user_agent  TEXT
+  user_agent  TEXT,
+  country     VARCHAR(8),     -- ISO code from x-vercel-ip-country
+  device      VARCHAR(20),
+  browser     VARCHAR(40),
+  os          VARCHAR(40),
+  referrer    VARCHAR(255)    -- referring host only
 );
 ```
+
+There are no migrations: tables are created on first use, and columns added after the first
+release are added in place by `ensure_tables()` (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on
+Postgres; a column check on SQLite for local dev). Older clicks without device/browser/OS are
+classified from their stored user agent when analytics are read.
 
 ---
 
@@ -290,6 +355,10 @@ git push origin main
 - CORS is explicitly configured to only allow trusted origins
 - Container runs as a non-root user
 - URL reachability is validated before shortening to prevent abuse
+- The link-preview fetcher only follows `http`/`https`, resolves every hop (redirects are followed
+  manually, at most 3) and refuses loopback, private, link-local and other non-public addresses
+  (SSRF guard), uses a 4 s timeout and reads at most 512 KB of HTML; failures never block shortening
+- Bulk CSV export neutralises spreadsheet formulas (cells starting with `=`, `+`, `-`, `@`)
 - `.env` is gitignored — never commit real secrets
 
 ---
@@ -332,7 +401,19 @@ Deploying the frontend does not provision a database or migrate backend data.
   (`backend/api/index.py` + `backend/vercel.json`). Database: **Neon Postgres** from the Vercel
   Marketplace, which sets `DATABASE_URL` automatically. Also set `BASE_URL`
   (`https://snaplink-ten-eosin.vercel.app`) and `ALLOWED_ORIGINS`. Redis is optional: without
-  `REDIS_URL` the cache is simply off. Deploy with `cd backend && vercel deploy --prod`.
+  `REDIS_URL` the cache is simply off. The project is connected to this GitHub repo with Root
+  Directory `backend`, so every push to `main` deploys to production and every PR gets a preview.
 - **Frontend** (`frontend/`) is the Vercel project `snaplink`. Its `vercel.json` proxies `/api/*`
   to the backend and forwards short codes (`/AbC123`) to the backend's redirect endpoint, so short
-  links live on the frontend's domain.
+  links live on the frontend's domain. It is also git-connected (Root Directory `frontend`) and
+  deploys on push to `main`.
+
+### Local development without Docker
+
+```bash
+cd backend
+VERCEL=1 DATABASE_URL=sqlite:////tmp/snaplink.db ../.venv/bin/uvicorn app.main:app --port 8000
+# in another shell
+cd frontend && python3 -m http.server 5500
+# open http://127.0.0.1:5500/?api=http://127.0.0.1:8000
+```
