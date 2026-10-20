@@ -46,3 +46,7 @@ logs/
 
 # ── Node (if using any JS tooling) ──
 node_modules/
+
+.vercel/
+
+.code-review-graph/

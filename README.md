@@ -92,8 +92,8 @@ cp .env.example .env
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/url-shortener.git
-cd url-shortener
+git clone https://github.com/Prajjawalsingh87/URL_Shortner.git
+cd URL_Shortner
 ```
 
 ### 2. Set up environment variables
@@ -308,3 +308,20 @@ git push origin main
 | Frontend | Vanilla HTML/CSS/JS |
 | Containerization | Docker + Docker Compose |
 | Reverse Proxy | Nginx |
+
+
+## October 2026 improvements
+
+Search recent links by URL or short code and export local link history as JSON. These controls do not delete server-side links. The frontend shares the indigo/slate visual language.
+
+
+## Vercel frontend
+
+Run `vercel link --project snaplink` and `vercel deploy` from `frontend/`.
+The static frontend has no build step. On `*.vercel.app`, its `/api/*` requests
+are proxied to the existing Render backend through `frontend/vercel.json`.
+This avoids needing a new browser CORS origin. Custom domains must set the
+`snaplink-api` meta tag appropriately or extend `resolveApiBase`.
+
+PostgreSQL, Redis and the FastAPI backend remain separate services on Render.
+Deploying the frontend does not provision a database or migrate backend data.

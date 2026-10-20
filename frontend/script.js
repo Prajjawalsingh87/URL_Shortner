@@ -29,7 +29,7 @@
     if (host === "localhost" || host === "127.0.0.1" || host === "") {
       return `http://${host || "localhost"}:8000`;
     }
-    return PROD_API_BASE;
+    return location.hostname.endsWith(".vercel.app") ? `${location.origin}/api` : PROD_API_BASE;
   }
 
   const API_BASE = resolveApiBase();
@@ -393,8 +393,18 @@
     renderRecent();
   }
 
+  $("recent-search").addEventListener("input", renderRecent);
+  $("export-recent").addEventListener("click", () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(loadRecent(), null, 2)], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = "snaplink-links.json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
   function renderRecent() {
-    const items = loadRecent();
+    const all = loadRecent();
+    const query = $("recent-search").value.trim().toLowerCase();
+    const items = all.filter(i => [i.short_code, i.original_url, i.short_url].join(" ").toLowerCase().includes(query));
+    $("recent-count").textContent = `${items.length} of ${all.length} links`;
+    $("export-recent").disabled = all.length === 0;
     recentList.replaceChildren(...items.map((item) => {
       const li = recentTpl.content.firstElementChild.cloneNode(true);
       li.dataset.code = item.short_code;
@@ -414,7 +424,7 @@
       }
       return li;
     }));
-    clearRecentBtn.hidden = items.length === 0;
+    clearRecentBtn.hidden = all.length === 0;
   }
 
   recentList.addEventListener("click", async (e) => {

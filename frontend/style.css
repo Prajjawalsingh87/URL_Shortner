@@ -610,3 +610,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+:root { --bg:#f6f7fb; --radius:14px; --radius-lg:22px; }
+.history-tools { display:flex; flex-wrap:wrap; align-items:center; gap:.75rem; margin:1rem 0; }
+.history-tools label,.history-tools span { font-size:.8rem; color:var(--text-2); }
+.history-tools input { flex:1; min-width:180px; padding:.75rem 1rem; border:1px solid var(--border); border-radius:12px; color:var(--text); background:var(--surface); font:inherit; }
+@media (prefers-color-scheme:dark) { :root { --bg:#0b0d14; } }
