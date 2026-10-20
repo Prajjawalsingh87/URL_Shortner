@@ -24,6 +24,11 @@ class URL(Base):
     expires_at = Column(DateTime, nullable=True)             # Optional expiry
     is_active = Column(Boolean, default=True)               # Soft delete / deactivation
 
+    # Link preview metadata, fetched once when the link is created (all optional)
+    title = Column(Text, nullable=True)                      # <title> / og:title
+    description = Column(Text, nullable=True)                # og:description / meta description
+    image_url = Column(Text, nullable=True)                  # og:image (absolute URL)
+
     # Relationship: one URL -> many Clicks
     clicks = relationship("Click", back_populates="url", cascade="all, delete-orphan")
 
@@ -43,6 +48,11 @@ class Click(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)   # When the click happened
     ip_address = Column(String(45), nullable=True)           # IPv4 or IPv6
     user_agent = Column(Text, nullable=True)                 # Browser/client user-agent
+    country = Column(String(8), nullable=True)               # ISO country code (from Vercel geo header)
+    device = Column(String(20), nullable=True)               # desktop / mobile / tablet / bot
+    browser = Column(String(40), nullable=True)              # Chrome, Safari, ...
+    os = Column(String(40), nullable=True)                   # Windows, iOS, ...
+    referrer = Column(String(255), nullable=True)            # Referring host, e.g. twitter.com
 
     # Relationship back to URL
     url = relationship("URL", back_populates="clicks")

@@ -3,7 +3,11 @@
  *
  * - Shorten URLs (POST /shorten) with optional custom alias + expiry
  * - Copy / open the result, keep a "recent links" list in localStorage
- * - Analytics for any short code (GET /analytics/{code})
+ * - Bulk shorten up to 20 links (POST /shorten/bulk), copy all / CSV
+ * - QR code for every short link (generated in the browser), PNG download
+ * - Link preview card (title / image / description fetched by the backend)
+ * - Analytics for any short code (GET /analytics/{code}): countries,
+ *   devices, browsers, OS and referrers
  * - Backend status pill (GET /health)
  */
 
@@ -62,6 +66,19 @@
   const copyBtn = $("copy-btn");
   const openBtn = $("open-btn");
   const statsBtn = $("stats-btn");
+  const resultPreview = $("result-preview");
+  const resultQr = $("result-qr");
+
+  const bulkForm = $("bulk-form");
+  const bulkInput = $("bulk-input");
+  const bulkError = $("bulk-error");
+  const bulkCount = $("bulk-count");
+  const bulkBtn = $("bulk-btn");
+  const bulkResults = $("bulk-results");
+  const bulkList = $("bulk-list");
+  const BULK_MAX = 20;
+
+  const qrDialog = $("qr-dialog");
 
   const recentList = $("recent-list");
   const recentTpl = $("recent-item-tpl");
@@ -226,6 +243,104 @@
   }
 
   // ──────────────────────────────────────────────
+  // QR codes (qrcode-generator, loaded from jsDelivr)
+  // ──────────────────────────────────────────────
+  /** Draw `text` as a QR code onto `canvas` (black on white, 4-module quiet zone). */
+  function drawQR(canvas, text, size) {
+    const ctx = canvas.getContext("2d");
+    if (typeof window.qrcode !== "function") {
+      canvas.width = canvas.height = size;
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = "#555"; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("QR unavailable", size / 2, size / 2);
+      return false;
+    }
+    const qr = window.qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    const modules = qr.getModuleCount();
+    const quiet = 4;
+    const total = modules + quiet * 2;
+    // On-screen canvases are sized by CSS; draw at >= device resolution so they stay sharp
+    const dpr = canvas.dataset.export ? 1 : Math.max(2, window.devicePixelRatio || 1);
+    const scale = Math.max(1, Math.ceil((size * dpr) / total));
+    const px = total * scale;
+    canvas.width = px;
+    canvas.height = px;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, px, px);
+    ctx.fillStyle = "#0f1222";
+    for (let r = 0; r < modules; r++) {
+      for (let c = 0; c < modules; c++) {
+        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+      }
+    }
+    canvas.dataset.qrText = text;
+    return true;
+  }
+
+  /** Render a 1024px QR code off-screen and download it as a PNG. */
+  function downloadQR(text, code) {
+    const canvas = document.createElement("canvas");
+    canvas.dataset.export = "1";
+    if (!drawQR(canvas, text, 1024)) { toast("QR code library didn't load. Try reloading the page."); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { toast("Couldn't create the PNG"); return; }
+      downloadBlob(blob, `snaplink-${code}-qr.png`);
+      toast("QR code downloaded");
+    }, "image/png");
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  let dialogItem = null;
+  function openQrDialog(item) {
+    dialogItem = item;
+    $("qr-dialog-link").textContent = prettyUrl(item.short_url);
+    drawQR($("qr-dialog-canvas"), item.short_url, 240);
+    if (typeof qrDialog.showModal === "function") qrDialog.showModal();
+    else qrDialog.setAttribute("open", "");
+  }
+  function closeQrDialog() {
+    if (typeof qrDialog.close === "function") qrDialog.close();
+    else qrDialog.removeAttribute("open");
+  }
+  $("qr-dialog-close").addEventListener("click", closeQrDialog);
+  qrDialog.addEventListener("click", (e) => { if (e.target === qrDialog) closeQrDialog(); });
+  $("qr-dialog-download").addEventListener("click", () => {
+    if (dialogItem) downloadQR(dialogItem.short_url, dialogItem.short_code);
+  });
+
+  // ──────────────────────────────────────────────
+  // Link preview card
+  // ──────────────────────────────────────────────
+  function renderPreview(el, data) {
+    if (!data.title && !data.image_url) { el.hidden = true; return; }
+    el.href = data.original_url;
+    el.querySelector(".link-preview-host").textContent = hostOf(data.original_url).replace(/^www\./, "");
+    el.querySelector(".link-preview-title").textContent = data.title || prettyUrl(data.original_url);
+    const desc = el.querySelector(".link-preview-desc");
+    desc.textContent = data.description || "";
+    desc.hidden = !data.description;
+    const img = el.querySelector(".link-preview-img");
+    if (data.image_url && /^https?:\/\//i.test(data.image_url)) {
+      img.hidden = false;
+      img.onerror = () => { img.hidden = true; img.removeAttribute("src"); };
+      img.src = data.image_url;
+    } else {
+      img.hidden = true;
+      img.removeAttribute("src");
+    }
+    el.hidden = false;
+  }
+
+  // ──────────────────────────────────────────────
   // Validation
   // ──────────────────────────────────────────────
   /** Returns { url } or { error }. Adds https:// when the scheme is missing. */
@@ -300,7 +415,7 @@
 
       setStatus("");
       showResult(data);
-      saveRecent(data);
+      saveRecentAndRender(data);
       urlInput.value = "";
       aliasInput.value = "";
     } catch (err) {
@@ -328,6 +443,9 @@
     originalUrlEl.href = data.original_url;
     createdEl.textContent = formatDate(data.created_at);
     expiresEl.textContent = data.expires_at ? `${formatDate(data.expires_at)} (${relativeTime(data.expires_at)})` : "Never";
+    renderPreview(resultPreview, data);
+    drawQR(resultQr, data.short_url, 148);
+    resultQr.setAttribute("aria-label", `QR code for ${prettyUrl(data.short_url)}`);
     resetCopyBtn();
     resultCard.hidden = false;
     resultCard.focus({ preventScroll: true });
@@ -354,6 +472,10 @@
     }
   });
 
+  $("qr-download-btn").addEventListener("click", () => {
+    if (currentResult) downloadQR(currentResult.short_url, currentResult.short_code);
+  });
+
   statsBtn.addEventListener("click", () => {
     if (currentResult) showAnalyticsFor(currentResult.short_code);
   });
@@ -362,6 +484,152 @@
     resultCard.hidden = true;
     currentResult = null;
     urlInput.focus();
+  });
+
+  // ──────────────────────────────────────────────
+  // Bulk shorten
+  // ──────────────────────────────────────────────
+  let bulkData = [];
+
+  function bulkLines() {
+    return bulkInput.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  }
+
+  function updateBulkCount() {
+    const n = bulkLines().length;
+    bulkCount.textContent = `${n} / ${BULK_MAX}`;
+    bulkCount.classList.toggle("is-over", n > BULK_MAX);
+  }
+  bulkInput.addEventListener("input", () => {
+    updateBulkCount();
+    if (bulkInput.getAttribute("aria-invalid")) setFieldError(bulkInput, bulkError, "");
+  });
+
+  bulkForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const lines = bulkLines();
+    if (!lines.length) {
+      setFieldError(bulkInput, bulkError, "Paste at least one link, one per line.");
+      bulkInput.focus();
+      return;
+    }
+    if (lines.length > BULK_MAX) {
+      setFieldError(bulkInput, bulkError, `That's ${lines.length} links. Bulk shorten takes up to ${BULK_MAX} at a time.`);
+      bulkInput.focus();
+      return;
+    }
+    setFieldError(bulkInput, bulkError, "");
+    const body = { urls: lines };
+    const expiry = $("bulk-expiry").value;
+    if (expiry) body.expires_in_days = Number(expiry);
+
+    setLoading(bulkBtn, true, `Shortening ${lines.length}…`);
+    try {
+      const data = await api("/shorten/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      bulkData = data.results;
+      // Save successes to "recent", keeping the pasted order (first line on top)
+      for (const r of [...data.results].reverse()) if (r.ok) saveRecent(r.link);
+      renderRecent();
+      renderBulk(data);
+      if (data.failed === 0) bulkInput.value = "";
+      else bulkInput.value = data.results.filter((r) => !r.ok).map((r) => r.input).join("\n");
+      updateBulkCount();
+    } catch (err) {
+      setFieldError(bulkInput, bulkError, err.message);
+    } finally {
+      setLoading(bulkBtn, false, "Shorten all");
+    }
+  });
+
+  function renderBulk(data) {
+    $("bulk-summary").textContent = data.failed
+      ? `${data.succeeded} of ${data.total} links shortened · ${data.failed} failed (left in the box so you can fix them)`
+      : `All ${data.total} link${data.total === 1 ? "" : "s"} shortened`;
+    $("bulk-copy").disabled = $("bulk-csv").disabled = data.succeeded === 0;
+    bulkList.replaceChildren(...data.results.map((r) => {
+      const li = document.createElement("li");
+      li.className = "bulk-item" + (r.ok ? "" : " is-error");
+      const main = document.createElement("div");
+      main.className = "bulk-main";
+      const orig = document.createElement("span");
+      orig.className = "bulk-original";
+      orig.textContent = r.ok ? (r.link.title || r.link.original_url) : r.input;
+      orig.title = r.ok ? r.link.original_url : r.input;
+      main.appendChild(orig);
+      if (r.ok) {
+        const a = document.createElement("a");
+        a.className = "bulk-short";
+        a.href = r.link.short_url; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = prettyUrl(r.link.short_url);
+        main.prepend(a);
+      } else {
+        const err = document.createElement("span");
+        err.className = "bulk-err";
+        err.textContent = r.error;
+        main.appendChild(err);
+      }
+      li.appendChild(main);
+      if (r.ok) {
+        const actions = document.createElement("div");
+        actions.className = "recent-actions";
+        for (const [action, label, icon] of [
+          ["copy", "Copy link", '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'],
+          ["qr", "Show QR code", '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2z"/>'],
+        ]) {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "icon-btn";
+          b.dataset.action = action; b.dataset.code = r.link.short_code;
+          b.setAttribute("aria-label", label);
+          b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg>`;
+          actions.appendChild(b);
+        }
+        li.appendChild(actions);
+      }
+      return li;
+    }));
+    bulkResults.hidden = false;
+    bulkResults.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  bulkList.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const r = bulkData.find((x) => x.ok && x.link.short_code === btn.dataset.code);
+    if (!r) return;
+    if (btn.dataset.action === "copy") {
+      const ok = await copyText(r.link.short_url);
+      toast(ok ? "Link copied to clipboard" : "Couldn't copy the link");
+    } else {
+      openQrDialog(r.link);
+    }
+  });
+
+  $("bulk-copy").addEventListener("click", async () => {
+    const urls = bulkData.filter((r) => r.ok).map((r) => r.link.short_url);
+    const ok = await copyText(urls.join("\n"));
+    toast(ok ? `Copied ${urls.length} link${urls.length === 1 ? "" : "s"}` : "Couldn't copy the links");
+  });
+
+  /** CSV cell: quote, double quotes, and neutralise spreadsheet formulas. */
+  function csvCell(value) {
+    let v = value == null ? "" : String(value);
+    if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
+    return `"${v.replace(/"/g, '""')}"`;
+  }
+
+  $("bulk-csv").addEventListener("click", () => {
+    const rows = [["original_url", "short_url", "short_code", "title", "status", "error"]];
+    for (const r of bulkData) {
+      rows.push(r.ok
+        ? [r.link.original_url, r.link.short_url, r.link.short_code, r.link.title || "", "ok", ""]
+        : [r.input, "", "", "", "error", r.error || ""]);
+    }
+    const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+    downloadBlob(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }), "snaplink-bulk.csv");
   });
 
   // ──────────────────────────────────────────────
@@ -388,21 +656,24 @@
       original_url: data.original_url,
       created_at: data.created_at,
       expires_at: data.expires_at || null,
+      title: data.title || null,
     });
     storeRecent(items);
+  }
+
+  function saveRecentAndRender(data) {
+    saveRecent(data);
     renderRecent();
   }
 
   $("recent-search").addEventListener("input", renderRecent);
   $("export-recent").addEventListener("click", () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(loadRecent(), null, 2)], { type: "application/json" }));
-    const a = document.createElement("a"); a.href = url; a.download = "snaplink-links.json"; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadBlob(new Blob([JSON.stringify(loadRecent(), null, 2)], { type: "application/json" }), "snaplink-links.json");
   });
   function renderRecent() {
     const all = loadRecent();
     const query = $("recent-search").value.trim().toLowerCase();
-    const items = all.filter(i => [i.short_code, i.original_url, i.short_url].join(" ").toLowerCase().includes(query));
+    const items = all.filter(i => [i.short_code, i.original_url, i.short_url, i.title || ""].join(" ").toLowerCase().includes(query));
     $("recent-count").textContent = `${items.length} of ${all.length} links`;
     $("export-recent").disabled = all.length === 0;
     recentList.replaceChildren(...items.map((item) => {
@@ -412,7 +683,7 @@
       a.href = item.short_url;
       a.textContent = prettyUrl(item.short_url);
       const orig = li.querySelector(".recent-original");
-      orig.textContent = item.original_url;
+      orig.textContent = item.title ? `${item.title} · ${prettyUrl(item.original_url)}` : item.original_url;
       orig.title = item.original_url;
       const meta = li.querySelector(".recent-meta");
       if (isExpired(item.expires_at)) {
@@ -441,6 +712,8 @@
         btn.classList.add("is-success");
         setTimeout(() => btn.classList.remove("is-success"), 1500);
       }
+    } else if (btn.dataset.action === "qr") {
+      openQrDialog(item);
     } else if (btn.dataset.action === "stats") {
       showAnalyticsFor(code);
     } else if (btn.dataset.action === "remove") {
@@ -514,6 +787,9 @@
     const orig = $("a-original-url");
     orig.textContent = data.original_url;
     orig.href = data.original_url;
+    const title = $("a-title");
+    title.textContent = data.title || "";
+    title.hidden = !data.title;
 
     const state = $("a-state");
     if (isExpired(data.expires_at)) {
@@ -533,7 +809,12 @@
     $("a-week-clicks").textContent = week.toLocaleString();
 
     renderChart(days);
-    renderUserAgents(data.top_user_agents || []);
+    renderBreakdown($("bd-countries"), data.top_countries || [], countryLabel,
+      "No country data yet. Countries are recorded for visits through the live site.");
+    renderBreakdown($("bd-devices"), data.top_devices || [], deviceLabel);
+    renderBreakdown($("bd-browsers"), data.top_browsers || []);
+    renderBreakdown($("bd-os"), data.top_os || []);
+    renderBreakdown($("bd-referrers"), data.top_referrers || []);
     renderClicksTable(data.recent_clicks || []);
   }
 
@@ -588,46 +869,44 @@
     }
   }
 
-  /** Summarise a user-agent string as "Browser · OS". */
-  function describeUA(ua) {
-    if (!ua || ua === "unknown") return "Unknown";
-    const browser =
-      /Edg\//.test(ua) ? "Edge" :
-      /OPR\/|Opera/.test(ua) ? "Opera" :
-      /Firefox\//.test(ua) ? "Firefox" :
-      /Chrome\//.test(ua) ? "Chrome" :
-      /Safari\//.test(ua) ? "Safari" :
-      /curl\//i.test(ua) ? "curl" :
-      /bot|crawler|spider|preview/i.test(ua) ? "Bot / link preview" :
-      /python|httpx|requests/i.test(ua) ? "Script" :
-      ua.split(/[\s/]/)[0] || "Other";
-    const os =
-      /Android/.test(ua) ? "Android" :
-      /iPhone|iPad|iOS/.test(ua) ? "iOS" :
-      /Windows/.test(ua) ? "Windows" :
-      /Mac OS X|Macintosh/.test(ua) ? "macOS" :
-      /Linux/.test(ua) ? "Linux" : "";
-    return os ? `${browser} · ${os}` : browser;
+  const regionNames = (() => {
+    try { return new Intl.DisplayNames(undefined, { type: "region" }); } catch { return null; }
+  })();
+
+  function flagEmoji(code) {
+    if (!/^[A-Z]{2}$/.test(code)) return "";
+    return String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
   }
 
-  function renderUserAgents(list) {
-    const container = $("ua-table");
+  function countryLabel(code) {
+    if (!code) return "—";
+    let name = code;
+    try { name = regionNames?.of(code) || code; } catch { /* unknown code */ }
+    const flag = flagEmoji(code);
+    return flag ? `${flag} ${name}` : name;
+  }
+
+  const DEVICE_LABELS = { desktop: "Desktop", mobile: "Mobile", tablet: "Tablet", bot: "Bot / script", unknown: "Unknown" };
+  function deviceLabel(d) { return DEVICE_LABELS[d] || d || "—"; }
+
+  /** Horizontal bar list for a [{name, count}] breakdown. */
+  function renderBreakdown(container, list, label = (x) => x, emptyText = "No visits yet.") {
     container.replaceChildren();
     if (!list.length) {
       const li = document.createElement("li");
       li.className = "muted-note";
-      li.textContent = "No visits yet.";
+      li.textContent = emptyText;
       container.appendChild(li);
       return;
     }
     const max = Math.max(...list.map((u) => u.count));
-    for (const { user_agent, count } of list) {
+    for (const { name, count } of list) {
       const li = document.createElement("li");
       li.className = "ua-row";
-      const name = document.createElement("span");
-      name.className = "ua-name";
-      name.textContent = describeUA(user_agent);
-      name.title = user_agent || "Unknown";
+      const n = document.createElement("span");
+      n.className = "ua-name";
+      n.textContent = label(name);
+      n.title = name;
       const c = document.createElement("span");
       c.className = "ua-count";
       c.textContent = count.toLocaleString();
@@ -636,7 +915,7 @@
       const fill = document.createElement("span");
       fill.style.width = `${(count / max) * 100}%`;
       bar.appendChild(fill);
-      li.append(name, c, bar);
+      li.append(n, c, bar);
       container.appendChild(li);
     }
   }
@@ -647,19 +926,22 @@
     if (!clicks.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 3;
+      td.colSpan = 6;
       td.className = "muted-note";
       td.textContent = "No clicks recorded yet.";
       tr.appendChild(td);
       tbody.appendChild(tr);
       return;
     }
-    for (const { timestamp, ip_address, user_agent } of clicks) {
+    for (const { timestamp, ip_address, user_agent, country, device, browser, os, referrer } of clicks) {
       const tr = document.createElement("tr");
       const cells = [
         [formatDate(timestamp), ""],
+        [country ? countryLabel(country) : "—", ""],
+        [deviceLabel(device), ""],
+        [[browser, os].filter((x) => x && x !== "Unknown" && x !== "Other").join(" · ") || "Unknown", ""],
+        [referrer || "Direct", ""],
         [ip_address || "—", "mono"],
-        [describeUA(user_agent), ""],
       ];
       for (const [text, cls] of cells) {
         const td = document.createElement("td");
@@ -667,7 +949,7 @@
         if (cls) td.className = cls;
         tr.appendChild(td);
       }
-      tr.lastChild.title = user_agent || "";
+      tr.children[3].title = user_agent || "";
       tr.firstChild.title = relativeTime(timestamp);
       tbody.appendChild(tr);
     }
@@ -697,5 +979,6 @@
   // Init
   // ──────────────────────────────────────────────
   renderRecent();
+  updateBulkCount();
   checkHealth();
 })();

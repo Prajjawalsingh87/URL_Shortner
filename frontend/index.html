@@ -39,6 +39,7 @@
 
       <nav class="nav" aria-label="Main">
         <a href="#top" class="nav-link nav-link-home">Shorten</a>
+        <a href="#bulk" class="nav-link">Bulk</a>
         <a href="#recent" class="nav-link">My links</a>
         <a href="#analytics" class="nav-link">Analytics</a>
         <a href="#" id="api-docs-link" class="nav-link nav-link-hide-sm" target="_blank" rel="noopener">API</a>
@@ -148,28 +149,103 @@
             </div>
           </div>
 
-          <dl class="result-meta">
-            <div class="meta-row meta-row-wide">
-              <dt>Destination</dt>
-              <dd><a id="original-url-display" href="#" target="_blank" rel="noopener noreferrer"></a></dd>
+          <div class="result-body">
+            <div class="result-info">
+              <a class="link-preview" id="result-preview" href="#" target="_blank" rel="noopener noreferrer" hidden>
+                <img class="link-preview-img" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                <span class="link-preview-text">
+                  <span class="link-preview-host"></span>
+                  <span class="link-preview-title"></span>
+                  <span class="link-preview-desc"></span>
+                </span>
+              </a>
+
+              <dl class="result-meta">
+                <div class="meta-row meta-row-wide">
+                  <dt>Destination</dt>
+                  <dd><a id="original-url-display" href="#" target="_blank" rel="noopener noreferrer"></a></dd>
+                </div>
+                <div class="meta-row">
+                  <dt>Created</dt>
+                  <dd id="created-display"></dd>
+                </div>
+                <div class="meta-row">
+                  <dt>Expires</dt>
+                  <dd id="expires-display"></dd>
+                </div>
+              </dl>
             </div>
-            <div class="meta-row">
-              <dt>Created</dt>
-              <dd id="created-display"></dd>
-            </div>
-            <div class="meta-row">
-              <dt>Expires</dt>
-              <dd id="expires-display"></dd>
-            </div>
-          </dl>
+
+            <figure class="qr-box">
+              <canvas class="qr-canvas" id="result-qr" width="148" height="148" role="img" aria-label="QR code for the short link"></canvas>
+              <figcaption class="sr-only">Scan to open the short link</figcaption>
+              <button type="button" class="btn btn-secondary btn-sm" id="qr-download-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+                <span class="btn-label">Download PNG</span>
+              </button>
+            </figure>
+          </div>
         </section>
 
         <ul class="trust-row" aria-label="Features">
           <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Cached redirects</li>
           <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Click analytics</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2z"/></svg>QR codes</li>
           <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 2"/></svg>Optional expiry</li>
           <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h7M16 19l2 2 4-4"/></svg>No sign-up</li>
         </ul>
+      </div>
+    </section>
+
+    <!-- ───────── Bulk shorten ───────── -->
+    <section class="section" id="bulk" aria-labelledby="bulk-title">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title" id="bulk-title">Bulk shorten</h2>
+            <p class="section-sub">Paste up to 20 links, one per line. Each one is checked and shortened on its own.</p>
+          </div>
+        </div>
+
+        <form class="card bulk-card" id="bulk-form" novalidate>
+          <label for="bulk-input" class="field-label">Links <span class="optional" id="bulk-count">0 / 20</span></label>
+          <textarea id="bulk-input" class="input textarea" rows="6" spellcheck="false" placeholder="https://example.com/first-long-link&#10;https://example.com/second-long-link&#10;example.org/no-scheme-is-fine" aria-describedby="bulk-error"></textarea>
+          <p class="field-error" id="bulk-error" role="alert"></p>
+          <div class="bulk-row">
+            <div class="bulk-expiry">
+              <label for="bulk-expiry" class="field-label">Expires after</label>
+              <select id="bulk-expiry" class="input select">
+                <option value="">Never</option>
+                <option value="1">1 day</option>
+                <option value="7">7 days</option>
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+                <option value="365">1 year</option>
+              </select>
+            </div>
+            <button type="submit" id="bulk-btn" class="btn btn-primary btn-lg">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-label">Shorten all</span>
+            </button>
+          </div>
+        </form>
+
+        <div class="card bulk-results" id="bulk-results" hidden tabindex="-1">
+          <div class="bulk-results-head">
+            <p class="bulk-summary" id="bulk-summary" role="status"></p>
+            <div class="bulk-actions">
+              <button type="button" class="btn btn-secondary btn-sm" id="bulk-copy">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+                <span class="btn-label">Copy all</span>
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="bulk-csv">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+                <span class="btn-label">Download CSV</span>
+              </button>
+            </div>
+          </div>
+          <ol class="bulk-list" id="bulk-list"></ol>
+        </div>
       </div>
     </section>
 
@@ -231,6 +307,7 @@
             <div class="a-identity">
               <span class="a-label">Short link</span>
               <p class="a-code" id="a-short-code"></p>
+              <p class="a-title" id="a-title" hidden></p>
               <a id="a-original-url" class="a-original" href="#" target="_blank" rel="noopener noreferrer"></a>
             </div>
             <span class="badge" id="a-state"></span>
@@ -261,8 +338,27 @@
               <div class="chart" id="chart-container"></div>
             </div>
             <div class="card a-block">
-              <h3 class="block-title">Top browsers &amp; devices</h3>
-              <ul class="ua-list" id="ua-table"></ul>
+              <h3 class="block-title">Top countries</h3>
+              <ul class="ua-list" id="bd-countries"></ul>
+            </div>
+          </div>
+
+          <div class="breakdown-grid">
+            <div class="card a-block">
+              <h3 class="block-title">Devices</h3>
+              <ul class="ua-list" id="bd-devices"></ul>
+            </div>
+            <div class="card a-block">
+              <h3 class="block-title">Browsers</h3>
+              <ul class="ua-list" id="bd-browsers"></ul>
+            </div>
+            <div class="card a-block">
+              <h3 class="block-title">Operating systems</h3>
+              <ul class="ua-list" id="bd-os"></ul>
+            </div>
+            <div class="card a-block">
+              <h3 class="block-title">Referrers</h3>
+              <ul class="ua-list" id="bd-referrers"></ul>
             </div>
           </div>
 
@@ -271,7 +367,7 @@
             <div class="table-wrap">
               <table class="clicks-table">
                 <thead>
-                  <tr><th scope="col">Time</th><th scope="col">Visitor IP</th><th scope="col">Browser</th></tr>
+                  <tr><th scope="col">Time</th><th scope="col">Country</th><th scope="col">Device</th><th scope="col">Browser</th><th scope="col">Referrer</th><th scope="col">Visitor IP</th></tr>
                 </thead>
                 <tbody id="clicks-tbody"></tbody>
               </table>
@@ -291,6 +387,21 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <dialog class="qr-dialog" id="qr-dialog" aria-labelledby="qr-dialog-title">
+    <div class="qr-dialog-head">
+      <h2 class="qr-dialog-title" id="qr-dialog-title">QR code</h2>
+      <button type="button" class="icon-btn" id="qr-dialog-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <canvas class="qr-canvas qr-canvas-lg" id="qr-dialog-canvas" width="240" height="240" role="img" aria-label="QR code"></canvas>
+    <p class="qr-dialog-link" id="qr-dialog-link"></p>
+    <button type="button" class="btn btn-primary" id="qr-dialog-download">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+      <span class="btn-label">Download PNG</span>
+    </button>
+  </dialog>
+
   <template id="recent-item-tpl">
     <li class="recent-item">
       <div class="recent-main">
@@ -302,6 +413,9 @@
         <button type="button" class="icon-btn" data-action="copy" aria-label="Copy link">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
         </button>
+        <button type="button" class="icon-btn" data-action="qr" aria-label="Show QR code">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg>
+        </button>
         <button type="button" class="icon-btn" data-action="stats" aria-label="View stats">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
         </button>
@@ -312,6 +426,8 @@
     </li>
   </template>
 
+  <!-- QR codes are generated in the browser (no server round-trip) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
   <script src="script.js"></script>
 </body>
 </html>

@@ -40,9 +40,49 @@ class ShortenResponse(BaseModel):
     original_url: str
     created_at: datetime
     expires_at: Optional[datetime] = None
+    title: Optional[str] = None              # Link preview: page title
+    description: Optional[str] = None        # Link preview: og:description
+    image_url: Optional[str] = None          # Link preview: og:image
 
     class Config:
         from_attributes = True
+
+
+BULK_MAX_URLS = 20
+
+
+class BulkShortenRequest(BaseModel):
+    """Request body for POST /shorten/bulk"""
+    urls: List[str]                          # 1-20 URLs; blank entries are ignored
+    expires_in_days: Optional[int] = None    # Applied to every link
+
+    @field_validator("urls")
+    @classmethod
+    def validate_urls(cls, v):
+        v = [u.strip() for u in v if u and u.strip()]
+        if not v:
+            raise ValueError("Provide at least one URL.")
+        if len(v) > BULK_MAX_URLS:
+            raise ValueError(f"You can shorten at most {BULK_MAX_URLS} URLs at once.")
+        if any(len(u) > 2048 for u in v):
+            raise ValueError("Each URL must be at most 2048 characters.")
+        return v
+
+
+class BulkItem(BaseModel):
+    """One line of a bulk request: either a created link or an error."""
+    input: str
+    ok: bool
+    error: Optional[str] = None
+    link: Optional[ShortenResponse] = None
+
+
+class BulkShortenResponse(BaseModel):
+    """Response for POST /shorten/bulk"""
+    total: int
+    succeeded: int
+    failed: int
+    results: List[BulkItem]
 
 
 class PreviewResponse(BaseModel):
@@ -52,6 +92,9 @@ class PreviewResponse(BaseModel):
     created_at: datetime
     total_clicks: int
     expires_at: Optional[datetime] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class ClickRecord(BaseModel):
@@ -59,6 +102,11 @@ class ClickRecord(BaseModel):
     timestamp: datetime
     ip_address: Optional[str]
     user_agent: Optional[str]
+    country: Optional[str] = None
+    device: Optional[str] = None
+    browser: Optional[str] = None
+    os: Optional[str] = None
+    referrer: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -81,6 +129,14 @@ class AnalyticsResponse(BaseModel):
     recent_clicks: List[ClickRecord]
     top_user_agents: List[dict]
     top_ips: List[dict]
+    top_countries: List[dict] = []           # [{"name": "IN", "count": 3}, ...]
+    top_devices: List[dict] = []
+    top_browsers: List[dict] = []
+    top_os: List[dict] = []
+    top_referrers: List[dict] = []
+    title: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
